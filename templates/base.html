@@ -1,0 +1,31 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{% block title %}BalanceZero{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <strong>BalanceZero</strong>
+  {% if session.user_id %}
+    <span>{{ current_username }}</span>
+    <form method="post" action="{{ url_for('logout') }}" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit">Log out</button>
+    </form>
+  {% endif %}
+</header>
+<main>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <ul class="flashes">
+        {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

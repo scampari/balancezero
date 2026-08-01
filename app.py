@@ -1,10 +1,12 @@
+
 import os
 from datetime import date
 from decimal import Decimal
 from functools import wraps
 
-from flask import Flask, abort, jsonify, request, session
+from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from flask_migrate import Migrate
+from flask_wtf import CSRFProtect
 from werkzeug.security import check_password_hash
 
 from models import Account, BudgetAllocation, Category, Transaction, User, db
@@ -18,6 +20,7 @@ app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
 os.makedirs(app.instance_path, exist_ok=True)
 db.init_app(app)
 migrate = Migrate(app, db)
+csrf = CSRFProtect(app)
 
 
 def login_required(view):
@@ -39,43 +42,46 @@ def get_owned_category(category_id):
     return category
 
 
+@app.context_processor
+def inject_current_user():
+    if "user_id" in session:
+        user = db.session.get(User, session["user_id"])
+        return {"current_username": user.username if user else None}
+    return {"current_username": None}
+
+
 @app.route("/")
 def index():
-    return "BalanceZero — scaffolding only, nothing built yet."
+    return redirect(url_for("budget_view")) if "user_id" in session else redirect(url_for("login"))
 
 
-@app.route("/login", methods=["POST"])
+@app.route("/login", methods=["GET", "POST"])
 def login():
+    if request.method == "GET":
+        return render_template("login.html")
     user = User.query.filter_by(username=request.form["username"]).first()
     if user is None or not check_password_hash(user.password_hash, request.form["password"]):
-        abort(401)
+        flash("Incorrect username or password.")
+        return render_template("login.html"), 401
     session["user_id"] = user.id
-    return jsonify(logged_in_as=user.username)
+    return redirect(url_for("budget_view"))
 
 
 @app.route("/logout", methods=["POST"])
 def logout():
     session.clear()
-    return jsonify(logged_out=True)
-
-
-@app.route("/dashboard")
-@login_required
-def dashboard():
-    user = db.session.get(User, session["user_id"])
-    return jsonify(username=user.username, is_demo=user.is_demo)
+    return redirect(url_for("login"))
 
 
 @app.route("/categories", methods=["POST"])
 @login_required
 def create_category():
-    category = Category(user_id=session["user_id"], name=request.form["name"])
-    db.session.add(category)
+    db.session.add(Category(user_id=session["user_id"], name=request.form["name"]))
     db.session.commit()
-    return jsonify(id=category.id, name=category.name), 201
+    return redirect(url_for("budget_view"))
 
 
-@app.route("/categories/<int:category_id>/allocations", methods=["POST"])
+@app.route("/categories//allocations", methods=["POST"])
 @login_required
 def set_allocation(category_id):
     category = get_owned_category(category_id)
@@ -90,13 +96,14 @@ def set_allocation(category_id):
     else:
         allocation.allocated_amount = amount
     db.session.commit()
-    return jsonify(category_id=category.id, month=str(month), allocated_amount=str(allocation.allocated_amount))
+    return redirect(url_for("budget_view", month=month.isoformat()))
 
 
 @app.route("/budget", methods=["GET"])
 @login_required
 def budget_view():
-    month = date.fromisoformat(request.args.get("month"))
+    month_str = request.args.get("month")
+    month = date.fromisoformat(month_str) if month_str else date.today().replace(day=1)
     user_id = session["user_id"]
 
     uncategorized_inflow = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
@@ -126,7 +133,9 @@ def budget_view():
             }
         )
 
-    return jsonify(month=str(month), ready_to_assign=str(ready_to_assign), categories=result)
+    return render_template(
+        "budget.html", month=month.isoformat(), ready_to_assign=str(ready_to_assign), categories=result
+    )
 
 
 if __name__ == "__main__":
