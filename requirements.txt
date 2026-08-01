@@ -1,3 +1,5 @@
 flask
 flask-wtf
 cryptography
+flask-sqlalchemy
+flask-migrate
