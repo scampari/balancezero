@@ -50,7 +50,12 @@ Tests are Playwright e2e tests driving a real browser against the real Flask bac
 - Playwright's browser binaries need to be installed (`npx playwright install`) — a one-time setup step, not part of `npm install`.
 
 ## Tests
-No test exists yet — test-writer will produce one when this slice is built.
+- `frontend/e2e/login-and-budget.spec.ts` § `"logging in with valid credentials shows the real budget page"` — covers § Login → budget page (happy path).
+- `frontend/e2e/login-and-budget.spec.ts` § `"wrong password shows an error and stays on the login page"` — covers § Login with wrong password.
+- `frontend/e2e/login-and-budget.spec.ts` § `"visiting /budget while logged out redirects to /login"` — covers § Unauthenticated visit to /budget redirects to /login.
+- `frontend/e2e/login-and-budget.spec.ts` § `"access token is never written to localStorage or sessionStorage"` — covers § Access token is never persisted to browser storage.
+
+All 4 confirmed red before commit — no login form or routing exists yet. The e2e harness itself (Docker test-db reset via `seed_e2e.py`, real Flask server, real Vite dev server via proxy, real Chromium browser) is fully working; only the React app is missing.
 
 ## Changes
 - 001 (2026-08-10) — initial contract, third slice of `changes/001-api-spa-rewrite/plan.md`.

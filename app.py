@@ -1,7 +1,7 @@
 import os
 from datetime import timedelta
 
-from flask import Flask
+from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
@@ -36,5 +36,11 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(budget_bp)
 
 
+@app.route("/api/health")
+def health():
+    return jsonify({"status": "ok"}), 200
+
+
 if __name__ == "__main__":
-    app.run(port=5002, debug=True)
+    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
+    app.run(port=5002, debug=debug)
