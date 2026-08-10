@@ -6,8 +6,8 @@ YNAB-style zero-based budgeting app. See `context/mvp-scope.md` for full feature
 
 | Spec | Status | Depends on |
 |---|---|---|
-| `auth.md` | planned | — |
-| `budget-api.md` | not yet created | auth |
+| `auth.md` | built | — |
+| `budget-api.md` | planned | auth |
 | `frontend-app.md` | not yet created | auth, budget-api |
 
 Not yet sliced: SimpleFIN connection, scheduled sync, transaction categorization UI, EKS deploy/CI pipeline. Each gets its own spec when its slice starts (see `context/mvp-scope.md` for the full feature list these will cover).
