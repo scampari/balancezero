@@ -48,7 +48,18 @@ Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup 
 - Rate limits (24 req/day) don't apply to this endpoint — that's `simplefin-sync.md`'s concern, once `/accounts` is being polled repeatedly. A single one-time claim-URL exchange is negligible by comparison.
 
 ## Tests
-No test exists yet — test-writer will produce one when this slice is built.
+- `tests/test_simplefin_connect.py` § `"test_connect_with_real_demo_token_succeeds"` — covers § POST /connect contract, against the real SimpleFIN demo bridge.
+- `tests/test_simplefin_connect.py` § `"test_connect_without_token_returns_401"` — covers § POST error case: no access token.
+- `tests/test_simplefin_connect.py` § `"test_connect_as_demo_user_returns_403"` — covers § POST error case: demo user.
+- `tests/test_simplefin_connect.py` § `"test_connect_missing_setup_token_returns_400"` — covers § POST error case: missing field.
+- `tests/test_simplefin_connect.py` § `"test_connect_invalid_base64_returns_400"` — covers § POST error case: invalid base64.
+- `tests/test_simplefin_connect.py` § `"test_connect_non_https_decoded_url_returns_400"` — covers § POST error case: non-https decoded URL.
+- `tests/test_simplefin_connect.py` § `"test_connect_with_bad_claim_url_returns_502"` — covers § POST error case: exchange rejected, sanitized error.
+- `tests/test_simplefin_connect.py` § `"test_reconnect_replaces_existing_connection"` — covers § POST contract: reconnecting replaces, doesn't conflict.
+- `tests/test_simplefin_connect.py` § `"test_status_returns_false_when_not_connected"` / `"test_status_returns_true_after_connecting"` — covers § GET /status contract.
+- `tests/test_simplefin_connect.py` § `"test_status_without_token_returns_401"` — covers § GET error case: no token.
+
+All 11 confirmed red (404, no routes yet) before commit. This suite requires real network access to beta-bridge.simplefin.org — worth knowing if it ever fails in an offline environment.
 
 ## Changes
 - 002 (2026-08-10) — initial contract, within `changes/002-simplefin-and-transactions/plan.md`.

@@ -5,6 +5,8 @@ os.environ.setdefault(
     "DATABASE_URL",
     "postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test",
 )
+# Fixed test-only Fernet key — never used for anything but the test database.
+os.environ.setdefault("SIMPLEFIN_ENCRYPTION_KEY", "tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=")
 
 import pytest
 from werkzeug.security import generate_password_hash
@@ -49,3 +51,21 @@ def access_token(client, test_user):
 @pytest.fixture()
 def auth_headers(access_token):
     return {"Authorization": f"Bearer {access_token}"}
+
+
+DEMO_USERNAME = "demo-test"
+DEMO_PASSWORD = "demo-password"
+
+
+@pytest.fixture()
+def demo_user(client):
+    user = User(username=DEMO_USERNAME, password_hash=generate_password_hash(DEMO_PASSWORD), is_demo=True)
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
+@pytest.fixture()
+def demo_auth_headers(client, demo_user):
+    response = client.post("/api/login", json={"username": DEMO_USERNAME, "password": DEMO_PASSWORD})
+    return {"Authorization": f"Bearer {response.get_json()['access_token']}"}
