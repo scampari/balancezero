@@ -1,0 +1,56 @@
+---
+status: planned
+depends_on: [auth.md, budget-api.md]
+---
+
+# Frontend app: React SPA shell — login + budget page
+
+## Does
+The walking skeleton for the new frontend: a Vite + TypeScript + React Router app that logs in against the real `/api/login` endpoint, holds the access token in memory (per `context/security-requirements.md`), and renders the real budget view from `/api/budget`. Proves the whole new architecture (React SPA talking to the Flask JSON API over real HTTP, with real JWT auth) works end-to-end on the smallest real page, before any richer UI work happens on top of it.
+
+## Done when
+- A user can visit the app, log in with real credentials, and land on a budget page showing real data fetched from the real Flask API.
+- Wrong credentials show an error and don't navigate away from login.
+- Visiting the budget page without being logged in redirects to login (route guard) rather than showing an empty/broken page.
+- Access token is held in memory only (a React context, not localStorage) — verified by the e2e test never finding it in any browser storage.
+
+## Integration test contract
+
+Tests are Playwright e2e tests driving a real browser against the real Flask backend (test Postgres via the existing `docker-compose.yml` service) and the real Vite dev server — not a mocked API. This matches the mock-boundary default already established for this project's backend tests (`context/testing.md`): prefer real dependencies over mocks wherever practical.
+
+### Login → budget page (happy path)
+
+**Setup:** A real test user exists in the test database (seeded via a script before the Playwright suite runs, same pattern as `seed_test_user.py`), with no categories/allocations yet (fresh state).
+**Action:** Navigate to `/login`, fill in the test user's username and password, submit.
+**Expected output:** Navigates to `/budget`. Page shows "Ready to Assign: $0.00" (no income yet) and an empty categories list — real values from the real `/api/budget` response, not hardcoded.
+**Side effects:** None beyond the real `/api/login` call issuing a real access token + refresh cookie.
+
+### Login with wrong password
+
+**Setup:** Same test user.
+**Action:** Navigate to `/login`, submit with the correct username but wrong password.
+**Expected output:** Stays on `/login`, shows a visible error message. No navigation to `/budget`.
+
+### Unauthenticated visit to /budget redirects to /login
+
+**Setup:** A fresh browser context — no prior login, no cookies.
+**Action:** Navigate directly to `/budget`.
+**Expected output:** Redirected to `/login` (route guard), not a blank or broken page.
+
+### Access token is never persisted to browser storage
+
+**Setup:** Complete a real login (as in the happy-path test).
+**Action:** After landing on `/budget`, inspect `localStorage` and `sessionStorage` in the browser context.
+**Expected output:** Neither contains the access token (or anything that looks like a JWT) — it must exist only in React state/memory, per the token-storage decision in `context/security-requirements.md`.
+
+## Notes
+- Frontend lives in a new `frontend/` directory: Vite + TypeScript + React Router, `frontend/src/api/client.ts` for the typed API client, `frontend/src/auth/AuthContext.tsx` for the in-memory access-token store, `frontend/src/pages/LoginPage.tsx` and `BudgetPage.tsx`.
+- On a 401 from any API call (expired access token), the client should transparently call `/api/refresh` once and retry — this isn't a separately listed contract case above since it's UI plumbing, not a distinct user-visible behavior, but it should work given `auth.md`'s refresh endpoint already exists and is tested.
+- This slice is deliberately minimal per the plan: login + budget view only. Category creation and allocation UI (both already have working API endpoints from `budget-api.md`) are follow-up work, not part of this walking skeleton.
+- Playwright's browser binaries need to be installed (`npx playwright install`) — a one-time setup step, not part of `npm install`.
+
+## Tests
+No test exists yet — test-writer will produce one when this slice is built.
+
+## Changes
+- 001 (2026-08-10) — initial contract, third slice of `changes/001-api-spa-rewrite/plan.md`.
