@@ -49,7 +49,22 @@ Lets a user see their transactions and assign them to a budget category (or unca
 - `pending` (boolean, already on the model — SimpleFIN's pending-transaction flag) is returned as-is; no special handling needed yet, but worth surfacing to the frontend now so `simplefin-sync.md` doesn't need a follow-up API change later.
 
 ## Tests
-No test exists yet — test-writer will produce one when this slice is built.
+- `tests/test_transactions.py` § `"test_list_transactions_returns_current_month_for_authenticated_user"` — covers § GET /api/transactions contract.
+- `tests/test_transactions.py` § `"test_list_transactions_shows_null_category_for_uncategorized"` — covers § GET contract, null-category shape.
+- `tests/test_transactions.py` § `"test_list_transactions_with_explicit_month_param"` — covers § GET month param.
+- `tests/test_transactions.py` § `"test_list_transactions_only_shows_own_accounts"` — covers § per-user isolation.
+- `tests/test_transactions.py` § `"test_list_transactions_without_token_returns_401"` — covers § GET error case: no token.
+- `tests/test_transactions.py` § `"test_list_transactions_invalid_month_returns_400"` — covers § GET error case: invalid month.
+- `tests/test_transactions.py` § `"test_patch_transaction_assigns_category"` — covers § PATCH contract (assign).
+- `tests/test_transactions.py` § `"test_patch_transaction_uncategorizes_with_null"` — covers § PATCH contract (uncategorize).
+- `tests/test_transactions.py` § `"test_patch_transaction_without_token_returns_401"` — covers § PATCH error case: no token.
+- `tests/test_transactions.py` § `"test_patch_transaction_missing_category_id_key_returns_400"` — covers § PATCH error case: missing key.
+- `tests/test_transactions.py` § `"test_patch_nonexistent_transaction_returns_404"` — covers § PATCH error case: transaction not found. Passes even pre-implementation (Flask routing 404 coincides); not a real green until built.
+- `tests/test_transactions.py` § `"test_patch_another_users_transaction_returns_403"` — covers § PATCH error case: wrong transaction owner.
+- `tests/test_transactions.py` § `"test_patch_transaction_with_nonexistent_category_returns_404"` — covers § PATCH error case: category not found. Same pre-implementation-pass caveat as above.
+- `tests/test_transactions.py` § `"test_patch_transaction_with_another_users_category_returns_403"` — covers § PATCH error case: wrong category owner.
+
+12 of 14 confirmed red (404, no routes yet) before commit; the other 2 are documented above.
 
 ## Changes
 - 002 (2026-08-10) — initial contract, first slice of `changes/002-simplefin-and-transactions/plan.md`.
