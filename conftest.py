@@ -20,6 +20,12 @@ TEST_PASSWORD = "correct horse battery staple"
 def client():
     flask_app.config.update(TESTING=True)
     with flask_app.app_context():
+        # drop_all() before create_all(), not just after: this test DB is also
+        # used by the Playwright e2e suite (see seed_e2e.py), which can leave
+        # rows behind. create_all() alone doesn't clear pre-existing data in
+        # tables that already exist, so a leftover e2e user can collide with
+        # this suite's own test_user fixture on a unique constraint.
+        db.drop_all()
         db.create_all()
         yield flask_app.test_client()
         db.session.remove()
