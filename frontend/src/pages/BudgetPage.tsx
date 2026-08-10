@@ -4,12 +4,17 @@ import { type Budget, getBudgetWithAutoRefresh } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 export function BudgetPage() {
-  const { accessToken, setAccessToken } = useAuth()
+  const { accessToken, setAccessToken, isAuthChecked } = useAuth()
   const navigate = useNavigate()
   const [budget, setBudget] = useState<Budget | null>(null)
 
   useEffect(() => {
     let cancelled = false
+
+    // Wait for AuthProvider's initial silent-refresh attempt to resolve
+    // before concluding there's no session — accessToken starts null on
+    // every mount regardless of whether a valid refresh cookie exists.
+    if (!isAuthChecked) return
 
     if (!accessToken) {
       navigate('/login', { replace: true })
@@ -32,7 +37,7 @@ export function BudgetPage() {
     return () => {
       cancelled = true
     }
-  }, [accessToken, navigate, setAccessToken])
+  }, [accessToken, isAuthChecked, navigate, setAccessToken])
 
   if (!budget) return <p>Loading…</p>
 

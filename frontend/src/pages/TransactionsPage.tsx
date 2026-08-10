@@ -10,13 +10,15 @@ import {
 import { useAuth } from '../auth/AuthContext'
 
 export function TransactionsPage() {
-  const { accessToken, setAccessToken } = useAuth()
+  const { accessToken, setAccessToken, isAuthChecked } = useAuth()
   const navigate = useNavigate()
   const [transactions, setTransactions] = useState<TransactionEntry[] | null>(null)
   const [categories, setCategories] = useState<Budget['categories'] | null>(null)
 
   useEffect(() => {
     let cancelled = false
+
+    if (!isAuthChecked) return
 
     if (!accessToken) {
       navigate('/login', { replace: true })
@@ -43,7 +45,7 @@ export function TransactionsPage() {
     return () => {
       cancelled = true
     }
-  }, [accessToken, navigate, setAccessToken])
+  }, [accessToken, isAuthChecked, navigate, setAccessToken])
 
   async function handleCategoryChange(transactionId: number, rawValue: string) {
     if (!accessToken || !transactions) return

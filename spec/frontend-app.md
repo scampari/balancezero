@@ -70,3 +70,4 @@ All 4 confirmed red before commit — no login form or routing exists yet. The e
 ## Changes
 - 001 (2026-08-10) — initial contract, third slice of `changes/001-api-spa-rewrite/plan.md`.
 - 001 (2026-08-10) — built. Real React app (api client, auth context, login/budget pages, router). All 4 e2e tests green against the real Flask backend and real browser. Full backend suite (36 tests) unaffected.
+- 002 (2026-08-10) — added silent-refresh-on-mount: AuthProvider now attempts one `/api/refresh` call on load, gated behind a new `isAuthChecked` flag pages wait for before redirecting to login. Found and fixed a real React StrictMode-exposed bug during this: without a ref guard, StrictMode's dev-only double-invoke fired two concurrent refresh calls racing against the same one-time-use rotating cookie — one 200s, one 401s, and the wrong one could win. All 7 e2e tests green (3 reruns for stability), full 50-test backend suite unaffected.
