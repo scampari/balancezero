@@ -1,6 +1,7 @@
 import hashlib
 import secrets
 from datetime import datetime, timedelta
+from functools import wraps
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, jwt_required
@@ -35,7 +36,7 @@ def _hash_token(raw_token):
     return hashlib.sha256(raw_token.encode()).hexdigest()
 
 
-def _issue_refresh_token(user_id):
+def _issue_refresh_token(user_id, commit=True):
     raw_token = secrets.token_urlsafe(32)
     db.session.add(
         RefreshToken(
@@ -44,57 +45,62 @@ def _issue_refresh_token(user_id):
             expires_at=datetime.utcnow() + REFRESH_TOKEN_TTL,
         )
     )
-    db.session.commit()
+    if commit:
+        db.session.commit()
     return raw_token
 
 
-def _find_active_refresh_token(raw_token):
+def _find_active_refresh_token(raw_token, lock=False):
     if not raw_token:
         return None
-    record = RefreshToken.query.filter_by(token_hash=_hash_token(raw_token)).first()
+    query = RefreshToken.query.filter_by(token_hash=_hash_token(raw_token))
+    if lock:
+        # Row lock so two concurrent refresh requests with the same cookie can't
+        # both pass this check before either revokes it (would mint two token
+        # pairs from one old one).
+        query = query.with_for_update()
+    record = query.first()
     if record is None or record.revoked_at is not None or record.expires_at < datetime.utcnow():
         return None
     return record
 
 
-def _revoke_refresh_token(record):
+def _revoke_refresh_token(record, commit=True):
     record.revoked_at = datetime.utcnow()
-    db.session.commit()
+    if commit:
+        db.session.commit()
+
+
+_REFRESH_COOKIE_ATTRS = dict(httponly=True, secure=True, samesite="Strict", path="/api")
 
 
 def _set_refresh_cookie(response, raw_token):
     response.set_cookie(
-        "refresh_token",
-        raw_token,
-        httponly=True,
-        secure=True,
-        samesite="Strict",
-        max_age=int(REFRESH_TOKEN_TTL.total_seconds()),
-        path="/api",
+        "refresh_token", raw_token, max_age=int(REFRESH_TOKEN_TTL.total_seconds()), **_REFRESH_COOKIE_ATTRS
     )
 
 
 def _clear_refresh_cookie(response):
-    response.set_cookie(
-        "refresh_token",
-        "",
-        httponly=True,
-        secure=True,
-        samesite="Strict",
-        max_age=0,
-        path="/api",
-    )
+    response.set_cookie("refresh_token", "", max_age=0, **_REFRESH_COOKIE_ATTRS)
 
 
-def _same_origin_or_no_origin():
+def _origin_is_trusted():
     """Lightweight CSRF guard for the two cookie-touching endpoints (refresh, logout).
     SameSite=Strict already blocks the cookie cross-site in modern browsers; this is
     defense in depth for the endpoints that read it, per spec/auth.md's Notes."""
     allowed_origin = current_app.config.get("ALLOWED_ORIGIN")
     request_origin = request.headers.get("Origin")
-    if allowed_origin and request_origin and request_origin != allowed_origin:
-        return False
-    return True
+    return not (allowed_origin and request_origin and request_origin != allowed_origin)
+
+
+def require_trusted_origin(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not _origin_is_trusted():
+            return jsonify({"error": "invalid origin"}), 403
+        return view(*args, **kwargs)
+
+    return wrapped
 
 
 @auth_bp.route("/login", methods=["POST"])
@@ -118,17 +124,16 @@ def login():
 
 
 @auth_bp.route("/refresh", methods=["POST"])
+@require_trusted_origin
 def refresh():
-    if not _same_origin_or_no_origin():
-        return jsonify({"error": "invalid origin"}), 403
-
-    record = _find_active_refresh_token(request.cookies.get("refresh_token"))
+    record = _find_active_refresh_token(request.cookies.get("refresh_token"), lock=True)
     if record is None:
         return jsonify({"error": "invalid or expired refresh token"}), 401
 
     user_id = record.user_id
-    _revoke_refresh_token(record)  # rotation — old token is now dead
-    new_raw_refresh_token = _issue_refresh_token(user_id)
+    _revoke_refresh_token(record, commit=False)  # rotation — old token is now dead
+    new_raw_refresh_token = _issue_refresh_token(user_id, commit=False)
+    db.session.commit()  # one round-trip for both writes
     access_token = create_access_token(identity=str(user_id))
 
     response = jsonify({"access_token": access_token})
@@ -138,10 +143,8 @@ def refresh():
 
 @auth_bp.route("/logout", methods=["POST"])
 @jwt_required()
+@require_trusted_origin
 def logout():
-    if not _same_origin_or_no_origin():
-        return jsonify({"error": "invalid origin"}), 403
-
     # Idempotent: an already-revoked or missing refresh cookie is not an error —
     # the end state ("not logged in") already holds.
     record = _find_active_refresh_token(request.cookies.get("refresh_token"))

@@ -22,7 +22,7 @@ Replaces session-cookie auth with JWT access/refresh tokens, fixing the flagged 
 **Action:** `POST /api/login`
 **Input:** JSON body `{"username": "...", "password": "..."}`
 **Expected output:** `200`, JSON body `{"access_token": "<jwt>"}`. Access token is NOT set as a cookie — response body only, frontend holds it in memory.
-**Side effects:** A new refresh-token record is created, associated with the user, storing a *hash* of the refresh token (never the raw token — same principle as password hashing, so a DB read alone can't yield a usable token). Response sets a `Set-Cookie` header for the refresh token: `HttpOnly; Secure; SameSite=Strict`, scoped to the refresh/logout endpoints only (not the whole site).
+**Side effects:** A new refresh-token record is created, associated with the user, storing a *hash* of the refresh token (never the raw token — same principle as password hashing, so a DB read alone can't yield a usable token). Response sets a `Set-Cookie` header for the refresh token: `HttpOnly; Secure; SameSite=Strict; Path=/api`. Path scoping is `/api` (the whole API surface), not narrower — `/api/login`, `/api/refresh`, `/api/logout` are flat sibling routes, and a cookie's `Path` attribute is a single prefix, not a set, so no `Path` value can include the latter two while excluding the first without renaming the routes. Accepted deviation from an earlier, more aspirational wording of this contract: `HttpOnly` already blocks JS access regardless of `Path`, and `/api/login` never reads the cookie, so the only real cost is an unused `Cookie` header on login requests.
 
 #### Error cases
 - **When password is wrong, Then** `401`, no access token issued, no refresh-token record created.
