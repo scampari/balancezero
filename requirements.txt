@@ -5,3 +5,4 @@ flask-migrate
 psycopg2-binary
 flask-jwt-extended
 flask-cors
+requests

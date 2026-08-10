@@ -9,6 +9,7 @@ from flask_migrate import Migrate
 from auth_api import auth_bp, register_jwt_error_handlers
 from budget_api import budget_bp
 from models import db
+from simplefin_api import simplefin_bp
 from transactions_api import transactions_bp
 
 app = Flask(__name__)
@@ -18,6 +19,8 @@ app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
 )
 app.config["JWT_SECRET_KEY"] = app.secret_key
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=15)
+# No default on purpose — this key protects real bank-access credentials.
+app.config["SIMPLEFIN_ENCRYPTION_KEY"] = os.environ["SIMPLEFIN_ENCRYPTION_KEY"]
 # Origin allowed to make credentialed cross-origin requests to /api/* (the React dev
 # server, and later the deployed frontend). Also used by auth_api's CSRF origin check.
 app.config["ALLOWED_ORIGIN"] = os.environ.get("ALLOWED_ORIGIN", "http://localhost:5173")
@@ -36,6 +39,7 @@ CORS(
 app.register_blueprint(auth_bp)
 app.register_blueprint(budget_bp)
 app.register_blueprint(transactions_bp)
+app.register_blueprint(simplefin_bp)
 
 
 @app.route("/api/health")

@@ -1,15 +1,34 @@
 """Integration tests for spec/simplefin-connect.md.
 
-Hits SimpleFIN's real, public, reusable demo bridge — no mocking of the
-exchange itself, per context/testing.md's "prefer real over mocked" default.
-Requires network access to reach beta-bridge.simplefin.org.
+Mocks the outbound claim-URL exchange at the HTTP client layer (requests.post)
+rather than hitting SimpleFIN's real demo bridge — see spec/simplefin-connect.md's
+Notes for why: the demo token's "reusable" claim didn't hold up empirically
+under a real test suite's repeated automated runs (it returned "already
+claimed" / 403 after a handful of real exchanges during this slice's own
+development). The mock is scoped tightly to the one outbound call this code
+makes, so everything else (route logic, encryption, error handling) still
+runs for real.
 """
 
 import base64
+from unittest.mock import Mock, patch
 
+import requests
 from models import User, db
 
 DEMO_SETUP_TOKEN = "aHR0cHM6Ly9iZXRhLWJyaWRnZS5zaW1wbGVmaW4ub3JnL3NpbXBsZWZpbi9jbGFpbS9ERU1PLXYyLUE4MEVDOUI5NDlGMjQxOEE0QzhE"
+FAKE_ACCESS_URL = "https://demo:demo@beta-bridge.simplefin.org/simplefin"
+
+
+def _mock_successful_exchange():
+    response = Mock()
+    response.text = FAKE_ACCESS_URL
+    response.raise_for_status = Mock()
+    return patch("simplefin_api.requests.post", return_value=response)
+
+
+def _mock_failed_exchange():
+    return patch("simplefin_api.requests.post", side_effect=requests.RequestException("simulated failure"))
 
 
 # ---------------------------------------------------------------------------
@@ -17,11 +36,12 @@ DEMO_SETUP_TOKEN = "aHR0cHM6Ly9iZXRhLWJyaWRnZS5zaW1wbGVmaW4ub3JnL3NpbXBsZWZpbi9j
 # ---------------------------------------------------------------------------
 
 
-def test_connect_with_real_demo_token_succeeds(client, test_user, auth_headers):
+def test_connect_with_valid_token_succeeds(client, test_user, auth_headers):
     # Act
-    response = client.post(
-        "/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers
-    )
+    with _mock_successful_exchange():
+        response = client.post(
+            "/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers
+        )
 
     # Assert
     assert response.status_code == 200
@@ -85,13 +105,14 @@ def test_connect_non_https_decoded_url_returns_400(client, test_user, auth_heade
 
 
 def test_connect_with_bad_claim_url_returns_502(client, test_user, auth_headers):
-    # Arrange — valid base64, valid https URL, but not a real SimpleFIN claim endpoint
+    # Arrange — valid base64, valid https URL, but the exchange itself fails
     bad_token = base64.b64encode(b"https://beta-bridge.simplefin.org/simplefin/claim/NOT-A-REAL-TOKEN").decode()
 
     # Act
-    response = client.post(
-        "/api/simplefin/connect", json={"setup_token": bad_token}, headers=auth_headers
-    )
+    with _mock_failed_exchange():
+        response = client.post(
+            "/api/simplefin/connect", json={"setup_token": bad_token}, headers=auth_headers
+        )
 
     # Assert — sanitized error, not SimpleFIN's raw response relayed
     assert response.status_code == 502
@@ -101,14 +122,16 @@ def test_connect_with_bad_claim_url_returns_502(client, test_user, auth_headers)
 
 def test_reconnect_replaces_existing_connection(client, test_user, auth_headers):
     # Arrange — connect once already
-    client.post("/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers)
+    with _mock_successful_exchange():
+        client.post("/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers)
     db.session.refresh(test_user)
     first_stored_value = test_user.simplefin_access_url_encrypted
 
     # Act — connect again
-    response = client.post(
-        "/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers
-    )
+    with _mock_successful_exchange():
+        response = client.post(
+            "/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers
+        )
 
     # Assert — succeeds, not a conflict
     assert response.status_code == 200
@@ -134,7 +157,8 @@ def test_status_returns_false_when_not_connected(client, test_user, auth_headers
 
 def test_status_returns_true_after_connecting(client, test_user, auth_headers):
     # Arrange
-    client.post("/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers)
+    with _mock_successful_exchange():
+        client.post("/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers)
 
     # Act
     response = client.get("/api/simplefin/status", headers=auth_headers)

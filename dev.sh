@@ -10,6 +10,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 export SECRET_KEY="${SECRET_KEY:-local-dev-secret-not-for-production}"
 export DATABASE_URL="${DATABASE_URL:-postgresql://balancezero_dev:balancezero_dev@localhost:55433/balancezero_dev}"
+# Fixed local-only key so re-running dev.sh doesn't invalidate previously
+# stored SimpleFIN connections. Not for production — generate a real one
+# there (Fernet.generate_key()) and manage it as a real secret.
+export SIMPLEFIN_ENCRYPTION_KEY="${SIMPLEFIN_ENCRYPTION_KEY:-Cf36XJcRZYQp9YWjLnryvcDl-SZ7D1b01e8wnS9QJAk=}"
 export FLASK_APP=app.py
 export FLASK_DEBUG="${FLASK_DEBUG:-1}"
 

@@ -12,7 +12,7 @@ Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup 
 - A real user can submit a Setup Token and, if valid, have their SimpleFIN connection stored — encrypted, never the raw Access URL sitting in a queryable column.
 - The demo user can never connect a real bank (`is_demo` guard) — the two-user isolation design depends on the demo account never touching a real external service.
 - A user can check whether they're currently connected, without ever seeing the Access URL itself again once it's stored (write-only from the API's perspective).
-- Verified against SimpleFIN's real, public, reusable demo token — no mocking of the exchange itself, consistent with `context/testing.md`'s "prefer real over mocked" default. The demo bridge (`beta-bridge.simplefin.org`) is SimpleFIN's own sanctioned test environment, the same category as a payment provider's test mode.
+- Manually verified against SimpleFIN's real public demo token before writing any code (see Notes) — but the automated test suite mocks the exchange itself; see Notes for why.
 
 ## Integration test contract
 
@@ -20,7 +20,7 @@ Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup 
 
 **Setup:** An authenticated, non-demo user with no existing connection.
 **Action:** `POST /api/simplefin/connect`, `Authorization: Bearer <access token>`.
-**Input:** JSON `{"setup_token": "<base64-encoded claim URL>"}`. Tests use SimpleFIN's real public demo token (`aHR0cHM6Ly9iZXRhLWJyaWRnZS5zaW1wbGVmaW4ub3JnL3NpbXBsZWZpbi9jbGFpbS9ERU1PLXYyLUE4MEVDOUI5NDlGMjQxOEE0QzhE`), which decodes to `https://beta-bridge.simplefin.org/simplefin/claim/DEMO-v2-A80EC9B949F2418A4C8D` and is confirmed reusable (doesn't get consumed/invalidated after one exchange — verified manually before writing this contract).
+**Input:** JSON `{"setup_token": "<base64-encoded claim URL>"}`. Tests use SimpleFIN's public demo token (`aHR0cHM6Ly9iZXRhLWJyaWRnZS5zaW1wbGVmaW4ub3JnL3NpbXBsZWZpbi9jbGFpbS9ERU1PLXYyLUE4MEVDOUI5NDlGMjQxOEE0QzhE`, decodes to `https://beta-bridge.simplefin.org/simplefin/claim/DEMO-v2-A80EC9B949F2418A4C8D`) as the realistic *shape* of the value, but the actual outbound exchange is mocked in tests — see Notes.
 **Expected output:** `200`, JSON `{"status": "connected"}`. Response never includes the Access URL or any part of it.
 **Side effects:** Server base64-decodes the setup token to a claim URL, `POST`s to it (no body), receives the real Access URL as a `text/plain` response body, encrypts it (Fernet), and stores it on `User.simplefin_access_url_encrypted`. Confirmed via direct DB read in the test that the stored value is neither the plaintext Access URL nor recognizably related to it (i.e., actually encrypted, not just base64'd again).
 
@@ -44,11 +44,12 @@ Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup 
 ## Notes
 - Encryption key: a new required env var, `SIMPLEFIN_ENCRYPTION_KEY` (a Fernet key — `cryptography.fernet.Fernet.generate_key()`). No default/fallback — failing loudly if it's unset is correct here, not a UX nicety to soften; this is the key protecting real bank-access credentials.
 - `models.py`'s existing comment on `simplefin_access_url_encrypted` already anticipated Fernet ciphertext (`LargeBinary` column) — no schema change needed, just the first thing that actually writes to it.
-- Uses `requests` (or Python's stdlib `urllib`) for the outbound POST to the claim URL — check whether `requests` is already a dependency before adding it; if not, it's a small, justified addition (Flask's own dependency tree doesn't include an HTTP *client*, only server-side routing).
+- Uses `requests` for the outbound POST to the claim URL — added as a new dependency (Flask's own dependency tree doesn't include an HTTP *client*, only server-side routing).
 - Rate limits (24 req/day) don't apply to this endpoint — that's `simplefin-sync.md`'s concern, once `/accounts` is being polled repeatedly. A single one-time claim-URL exchange is negligible by comparison.
+- **Mock-boundary correction, made during this slice's own development**: this contract originally planned to hit SimpleFIN's real demo bridge in every automated test run, treating it as a Stripe-test-mode-style "safe, reusable test environment." That assumption was wrong. Manual verification (`curl -X POST` against the decoded claim URL) succeeded twice, then a handful of real test runs during development exhausted it — the bridge started returning `403 Forbidden (was it already claimed?)`, and it didn't recover after waiting. The demo token's "reusable" documentation apparently means something narrower than "safe to re-exchange indefinitely across an automated test suite's many reruns." Corrected: the outbound `requests.post` call is now mocked at the HTTP client layer (`unittest.mock.patch("simplefin_api.requests.post", ...)`), which is the documented fallback category in `context/testing.md`'s mock-boundary table for "uncontrolled, no *reliably repeatable* safe test environment" — everything except that one network call (decoding, validation, encryption, DB writes, error handling) still runs for real.
 
 ## Tests
-- `tests/test_simplefin_connect.py` § `"test_connect_with_real_demo_token_succeeds"` — covers § POST /connect contract, against the real SimpleFIN demo bridge.
+- `tests/test_simplefin_connect.py` § `"test_connect_with_valid_token_succeeds"` — covers § POST /connect contract (exchange mocked, everything else real).
 - `tests/test_simplefin_connect.py` § `"test_connect_without_token_returns_401"` — covers § POST error case: no access token.
 - `tests/test_simplefin_connect.py` § `"test_connect_as_demo_user_returns_403"` — covers § POST error case: demo user.
 - `tests/test_simplefin_connect.py` § `"test_connect_missing_setup_token_returns_400"` — covers § POST error case: missing field.
@@ -59,7 +60,7 @@ Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup 
 - `tests/test_simplefin_connect.py` § `"test_status_returns_false_when_not_connected"` / `"test_status_returns_true_after_connecting"` — covers § GET /status contract.
 - `tests/test_simplefin_connect.py` § `"test_status_without_token_returns_401"` — covers § GET error case: no token.
 
-All 11 confirmed red (404, no routes yet) before commit. This suite requires real network access to beta-bridge.simplefin.org — worth knowing if it ever fails in an offline environment.
+All 11 confirmed red (404, no routes yet) before commit. No external network dependency — verified reliable across 3 consecutive full reruns after the mock-boundary correction (see Notes).
 
 ## Changes
 - 002 (2026-08-10) — initial contract, within `changes/002-simplefin-and-transactions/plan.md`.
