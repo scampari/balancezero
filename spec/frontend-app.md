@@ -43,6 +43,15 @@ Tests are Playwright e2e tests driving a real browser against the real Flask bac
 **Action:** After landing on `/budget`, inspect `localStorage` and `sessionStorage` in the browser context.
 **Expected output:** Neither contains the access token (or anything that looks like a JWT) — it must exist only in React state/memory, per the token-storage decision in `context/security-requirements.md`.
 
+### Reloading the page restores the session via the refresh cookie
+
+**Setup:** Complete a real login (valid refresh cookie now set).
+**Action:** Perform a real browser reload (`page.reload()`, not client-side navigation) while on `/budget`.
+**Expected output:** Stays on `/budget` showing real data — not redirected to `/login`. The in-memory access token is gone after a reload (that's expected, nothing persists it), but the app must attempt one silent `/api/refresh` on load using the still-valid httpOnly cookie before concluding the user is logged out, rather than redirecting immediately just because `accessToken` starts `null`.
+
+#### Error case
+- **When there's no valid refresh cookie (fresh context, never logged in), Then** the silent-refresh attempt fails and the user is redirected to `/login` as before — this case is already covered by "Unauthenticated visit to /budget redirects to /login," just confirming the new mount-time check doesn't change that outcome, only adds a check before it.
+
 ## Notes
 - Frontend lives in a new `frontend/` directory: Vite + TypeScript + React Router, `frontend/src/api/client.ts` for the typed API client, `frontend/src/auth/AuthContext.tsx` for the in-memory access-token store, `frontend/src/pages/LoginPage.tsx` and `BudgetPage.tsx`.
 - On a 401 from any API call (expired access token), the client should transparently call `/api/refresh` once and retry — this isn't a separately listed contract case above since it's UI plumbing, not a distinct user-visible behavior, but it should work given `auth.md`'s refresh endpoint already exists and is tested.
@@ -54,6 +63,7 @@ Tests are Playwright e2e tests driving a real browser against the real Flask bac
 - `frontend/e2e/login-and-budget.spec.ts` § `"wrong password shows an error and stays on the login page"` — covers § Login with wrong password.
 - `frontend/e2e/login-and-budget.spec.ts` § `"visiting /budget while logged out redirects to /login"` — covers § Unauthenticated visit to /budget redirects to /login.
 - `frontend/e2e/login-and-budget.spec.ts` § `"access token is never written to localStorage or sessionStorage"` — covers § Access token is never persisted to browser storage.
+- `frontend/e2e/login-and-budget.spec.ts` § `"reloading the page restores the session via the refresh cookie"` — covers § Reloading the page restores the session via the refresh cookie. Added 2026-08-10, after discovering during `transactions-ui.md`'s build that a real reload always bounced to `/login` even with a valid session — confirmed red before this fix.
 
 All 4 confirmed red before commit — no login form or routing exists yet. The e2e harness itself (Docker test-db reset via `seed_e2e.py`, real Flask server, real Vite dev server via proxy, real Chromium browser) is fully working; only the React app is missing.
 

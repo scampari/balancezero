@@ -60,4 +60,21 @@ test.describe('login and budget page (walking skeleton)', () => {
     const looksLikeJwt = (v: string) => /^[\w-]+\.[\w-]+\.[\w-]+$/.test(v)
     expect(allValues.some(looksLikeJwt)).toBe(false)
   })
+
+  test('reloading the page restores the session via the refresh cookie', async ({ page }) => {
+    // Arrange — real login
+    await page.goto('/login')
+    await page.getByLabel('Username').fill(USERNAME)
+    await page.getByLabel('Password').fill(PASSWORD)
+    await page.getByRole('button', { name: 'Log in' }).click()
+    await expect(page).toHaveURL(/\/budget$/)
+
+    // Act — a real browser reload, not client-side navigation. This wipes the
+    // in-memory access token by design; only the httpOnly refresh cookie survives.
+    await page.reload()
+
+    // Assert — stays on /budget with real data, not bounced to /login
+    await expect(page).toHaveURL(/\/budget$/)
+    await expect(page.getByText('Ready to Assign')).toBeVisible()
+  })
 })
