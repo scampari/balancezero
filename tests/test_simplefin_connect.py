@@ -22,13 +22,38 @@ FAKE_ACCESS_URL = "https://demo:demo@beta-bridge.simplefin.org/simplefin"
 
 def _mock_successful_exchange():
     response = Mock()
-    response.text = FAKE_ACCESS_URL
-    response.raise_for_status = Mock()
+    response.status_code = 200
+    response.raw.read.return_value = FAKE_ACCESS_URL.encode("utf-8")
     return patch("simplefin_api.requests.post", return_value=response)
 
 
 def _mock_failed_exchange():
     return patch("simplefin_api.requests.post", side_effect=requests.RequestException("simulated failure"))
+
+
+def _mock_redirect_exchange():
+    """Simulates a compromised/malicious claim endpoint trying to redirect the
+    request elsewhere — allow_redirects=False means requests won't follow it,
+    so this should surface as an ordinary failure, not a followed redirect."""
+    response = Mock()
+    response.status_code = 302
+    return patch("simplefin_api.requests.post", return_value=response)
+
+
+def _mock_oversized_exchange():
+    response = Mock()
+    response.status_code = 200
+    response.raw.read.return_value = b"x" * 5000  # over MAX_CLAIM_RESPONSE_BYTES
+    return patch("simplefin_api.requests.post", return_value=response)
+
+
+def _mock_malformed_body_exchange():
+    """A 200 response whose body doesn't look like an access URL at all —
+    e.g. a compromised endpoint trying to poison the stored credential."""
+    response = Mock()
+    response.status_code = 200
+    response.raw.read.return_value = b"not a url"
+    return patch("simplefin_api.requests.post", return_value=response)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +127,56 @@ def test_connect_non_https_decoded_url_returns_400(client, test_user, auth_heade
 
     # Assert
     assert response.status_code == 400
+
+
+def test_connect_https_but_untrusted_domain_returns_400(client, test_user, auth_headers):
+    # Arrange — https, valid URL shape, but not a SimpleFIN Bridge domain.
+    # SSRF defense: the https-only check alone doesn't stop a token aimed at
+    # an internal or third-party host.
+    ssrf_token = base64.b64encode(b"https://169.254.169.254/claim/x").decode()
+
+    # Act
+    response = client.post(
+        "/api/simplefin/connect", json={"setup_token": ssrf_token}, headers=auth_headers
+    )
+
+    # Assert
+    assert response.status_code == 400
+
+
+def test_connect_exchange_redirect_is_not_followed(client, test_user, auth_headers):
+    # Act — a compromised claim endpoint tries to redirect elsewhere
+    with _mock_redirect_exchange():
+        response = client.post(
+            "/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers
+        )
+
+    # Assert — surfaces as an ordinary failure, not a followed redirect
+    assert response.status_code == 502
+
+
+def test_connect_oversized_response_returns_502(client, test_user, auth_headers):
+    # Act
+    with _mock_oversized_exchange():
+        response = client.post(
+            "/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers
+        )
+
+    # Assert
+    assert response.status_code == 502
+
+
+def test_connect_malformed_response_body_returns_502(client, test_user, auth_headers):
+    # Act — 200 response, but the body doesn't look like an access URL
+    with _mock_malformed_body_exchange():
+        response = client.post(
+            "/api/simplefin/connect", json={"setup_token": DEMO_SETUP_TOKEN}, headers=auth_headers
+        )
+
+    # Assert — not stored, surfaced as a failure
+    assert response.status_code == 502
+    db.session.refresh(test_user)
+    assert test_user.simplefin_access_url_encrypted is None
 
 
 def test_connect_with_bad_claim_url_returns_502(client, test_user, auth_headers):

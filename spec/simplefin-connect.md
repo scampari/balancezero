@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: [auth.md]
 ---
 
@@ -28,8 +28,9 @@ Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup 
 - **When no/invalid access token, Then** `401`.
 - **When the authenticated user is the demo user (`is_demo=True`), Then** `403` — demo accounts never connect real banks.
 - **When `setup_token` is missing from the request body, Then** `400`.
-- **When `setup_token` isn't valid base64, or decodes to something that isn't an `https://` URL, Then** `400` (defense against a malformed/malicious token attempting to make the server POST to an arbitrary or non-HTTPS internal address).
-- **When the decoded claim URL rejects the exchange (SimpleFIN returns a non-2xx), Then** `502`, with a generic, sanitized error message — never relay SimpleFIN's raw response body back to the client (per `context/simplefin-integration.md`'s "sanitize error messages" requirement).
+- **When `setup_token` isn't valid base64, decodes to something that isn't an `https://` URL, or decodes to an `https://` URL on a host outside SimpleFIN Bridge's known domains (`bridge.simplefin.org`, `beta-bridge.simplefin.org`), Then** `400` — the scheme check alone doesn't stop a token aimed at an internal or third-party host (found during this slice's own security review; see Notes).
+- **When the decoded claim URL rejects the exchange (SimpleFIN returns anything other than exactly `200`), Then** `502`, with a generic, sanitized error message — never relay SimpleFIN's raw response body back to the client (per `context/simplefin-integration.md`'s "sanitize error messages" requirement). Redirects are treated as a failure, not followed (see Notes — a compromised claim endpoint could otherwise redirect around the domain allowlist).
+- **When the claim response body exceeds a size cap, or doesn't look like an `https://user:pass@host/...` access URL, Then** `502` — nothing is stored (see Notes).
 - **When a connection already exists for this user, Then** the new exchange still succeeds and replaces the old encrypted value (`200`, not `409`) — reconnecting is a legitimate action (e.g. after revoking access on SimpleFIN's side), not an error.
 
 ### GET /api/simplefin/status
@@ -47,6 +48,11 @@ Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup 
 - Uses `requests` for the outbound POST to the claim URL — added as a new dependency (Flask's own dependency tree doesn't include an HTTP *client*, only server-side routing).
 - Rate limits (24 req/day) don't apply to this endpoint — that's `simplefin-sync.md`'s concern, once `/accounts` is being polled repeatedly. A single one-time claim-URL exchange is negligible by comparison.
 - **Mock-boundary correction, made during this slice's own development**: this contract originally planned to hit SimpleFIN's real demo bridge in every automated test run, treating it as a Stripe-test-mode-style "safe, reusable test environment." That assumption was wrong. Manual verification (`curl -X POST` against the decoded claim URL) succeeded twice, then a handful of real test runs during development exhausted it — the bridge started returning `403 Forbidden (was it already claimed?)`, and it didn't recover after waiting. The demo token's "reusable" documentation apparently means something narrower than "safe to re-exchange indefinitely across an automated test suite's many reruns." Corrected: the outbound `requests.post` call is now mocked at the HTTP client layer (`unittest.mock.patch("simplefin_api.requests.post", ...)`), which is the documented fallback category in `context/testing.md`'s mock-boundary table for "uncontrolled, no *reliably repeatable* safe test environment" — everything except that one network call (decoding, validation, encryption, DB writes, error handling) still runs for real.
+- **Security review findings, fixed before this slice was marked built**: the plan flagged this slice for a focused security pass (real bank-access credentials). A dedicated review surfaced four real issues, all fixed:
+  1. **SSRF via the claim URL** — the original `https://` scheme check didn't restrict the *host*, so an authenticated user could submit a token decoding to `https://169.254.169.254/...` or any other internal https-enabled address, turning the app server into an SSRF pivot. Fixed with a host allowlist (`bridge.simplefin.org`, `beta-bridge.simplefin.org`).
+  2. **Redirect bypass** — `requests` follows redirects by default, which would let a compromised claim endpoint 302 the request around the domain allowlist entirely. Fixed with `allow_redirects=False`; anything other than a direct `200` is treated as a failure.
+  3. **Unbounded response body** — the exchange response was read into memory with no size limit, a memory-exhaustion DoS vector via a malicious/compromised endpoint. Fixed with a 4KB cap via streamed reads (real access URLs are a few hundred bytes).
+  4. **No shape validation on the stored value** — the raw response body was encrypted and stored verbatim with no check that it actually looked like an access URL, meaning a malicious response could poison the stored credential with something `simplefin-sync.md` would later decrypt and feed to an HTTP client unexamined. Fixed with a `_looks_like_access_url` check (`https://user:pass@host/...` shape) before encrypting/storing.
 
 ## Tests
 - `tests/test_simplefin_connect.py` § `"test_connect_with_valid_token_succeeds"` — covers § POST /connect contract (exchange mocked, everything else real).
@@ -55,6 +61,10 @@ Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup 
 - `tests/test_simplefin_connect.py` § `"test_connect_missing_setup_token_returns_400"` — covers § POST error case: missing field.
 - `tests/test_simplefin_connect.py` § `"test_connect_invalid_base64_returns_400"` — covers § POST error case: invalid base64.
 - `tests/test_simplefin_connect.py` § `"test_connect_non_https_decoded_url_returns_400"` — covers § POST error case: non-https decoded URL.
+- `tests/test_simplefin_connect.py` § `"test_connect_https_but_untrusted_domain_returns_400"` — covers § POST error case: SSRF domain allowlist rejection.
+- `tests/test_simplefin_connect.py` § `"test_connect_exchange_redirect_is_not_followed"` — covers § POST error case: redirect not followed.
+- `tests/test_simplefin_connect.py` § `"test_connect_oversized_response_returns_502"` — covers § POST error case: oversized response body.
+- `tests/test_simplefin_connect.py` § `"test_connect_malformed_response_body_returns_502"` — covers § POST error case: malformed/non-URL response body, confirms nothing gets stored.
 - `tests/test_simplefin_connect.py` § `"test_connect_with_bad_claim_url_returns_502"` — covers § POST error case: exchange rejected, sanitized error.
 - `tests/test_simplefin_connect.py` § `"test_reconnect_replaces_existing_connection"` — covers § POST contract: reconnecting replaces, doesn't conflict.
 - `tests/test_simplefin_connect.py` § `"test_status_returns_false_when_not_connected"` / `"test_status_returns_true_after_connecting"` — covers § GET /status contract.
@@ -64,3 +74,4 @@ All 11 confirmed red (404, no routes yet) before commit. No external network dep
 
 ## Changes
 - 002 (2026-08-10) — initial contract, within `changes/002-simplefin-and-transactions/plan.md`.
+- 002 (2026-08-10) — built. 15 tests green (11 original + 4 added from the security review). Mock-boundary and security findings documented above.

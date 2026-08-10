@@ -12,6 +12,6 @@ YNAB-style zero-based budgeting app. See `context/mvp-scope.md` for full feature
 | `transactions.md` | built | auth, budget-api |
 | `transactions-ui.md` | built | transactions, frontend-app |
 
-| `simplefin-connect.md` | planned | auth |
+| `simplefin-connect.md` | built | auth |
 
 Not yet sliced: scheduled sync (`simplefin-sync.md`), EKS deploy/CI pipeline. Each gets its own spec when its slice starts (see `context/mvp-scope.md` for the full feature list, and `changes/002-simplefin-and-transactions/plan.md` for the current phase's rationale).
