@@ -1,0 +1,10 @@
+# SimpleFIN Bridge integration
+
+Researched 2026-07-31 (see `~/Desktop/CICD/BALANCEZERO-SCOPE.md` for original notes). Sources: [SimpleFIN Protocol](https://www.simplefin.org/protocol.html), [SimpleFIN Bridge Developer Guide](https://beta-bridge.simplefin.org/info/developers) — re-verify against current docs before implementing, given time elapsed.
+
+- **Auth flow**: user generates a one-time Setup Token from SimpleFIN's UI (`bridge.simplefin.org/simplefin/create`). The app base64-decodes it to a claim URL, POSTs once to exchange it for a permanent **Access URL** with HTTP Basic Auth credentials embedded (`https://<user>:<pass>@bridge.simplefin.org/simplefin`). The app never sees the user's actual bank login credentials.
+- **Data access**: `GET /accounts` on the Access URL returns connections, accounts (balance, available-balance, balance-date), and transactions (amount, description, posted date, pending flag). Supports `start-date`/`end-date`, `account`, `pending=1`, `balances-only=1` filters.
+- **Rate limit**: 24 requests/day per access token, 90-day max range per request; exceeding it disables the token. Rules out on-demand/real-time sync — needs a scheduled job (cron-style), a few times a day, comfortably under the cap. Not a queue/worker system — unnecessary at this request volume.
+- **Sign convention**: amounts are positive = inflow, negative = outflow. `models.py`'s `Transaction.amount` already follows this convention.
+- **Security requirement, stated by SimpleFIN itself**: the Access URL must be stored "at least as securely as the user's financial data" — encrypted at rest, not a plaintext DB column. `User.simplefin_access_url_encrypted` (LargeBinary) already anticipates this with Fernet ciphertext. HTTPS only, verify TLS, sanitize error messages before ever displaying them to a user.
+- **Demo user**: has no SimpleFIN connection at all — `simplefin_access_url_encrypted` stays null, accounts/transactions are seeded synthetically (`seed_demo.py` already exists). Never call SimpleFIN on behalf of the demo user.
