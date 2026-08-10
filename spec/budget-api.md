@@ -63,7 +63,27 @@ Converts the existing server-rendered budget routes (`create_category`, `set_all
 - Removing the old templates (`login.html`, `budget.html`) and the `login_required` decorator / session-based `get_owned_category` helper happens in this slice too, once the new routes are green — no reason to keep dead code around once nothing references it.
 
 ## Tests
-No test exists yet — test-writer will produce one when this slice is built.
+- `tests/test_budget_api.py` § `"test_create_category_with_valid_name_returns_201"` — covers § POST /api/categories contract.
+- `tests/test_budget_api.py` § `"test_create_category_without_token_returns_401"` — covers § POST /api/categories error case: no token.
+- `tests/test_budget_api.py` § `"test_create_category_with_empty_name_returns_400"` — covers § POST /api/categories error case: empty name.
+- `tests/test_budget_api.py` § `"test_create_category_with_missing_name_returns_400"` — covers § POST /api/categories error case: missing name.
+- `tests/test_budget_api.py` § `"test_create_category_with_duplicate_name_returns_409"` — covers § POST /api/categories error case: duplicate name.
+- `tests/test_budget_api.py` § `"test_set_allocation_creates_new_allocation_returns_200"` — covers § POST allocations contract (create).
+- `tests/test_budget_api.py` § `"test_set_allocation_on_existing_month_updates_it_not_duplicates"` — covers § POST allocations contract (upsert).
+- `tests/test_budget_api.py` § `"test_set_allocation_without_token_returns_401"` — covers § POST allocations error case: no token.
+- `tests/test_budget_api.py` § `"test_set_allocation_on_nonexistent_category_returns_404"` — covers § POST allocations error case: category not found. Note: this test passes even before the route exists, since Flask's own routing 404 coincides with the domain 404 — not a real green until the route is actually implemented; re-verified manually during build.
+- `tests/test_budget_api.py` § `"test_set_allocation_on_another_users_category_returns_403"` — covers § POST allocations error case: wrong owner.
+- `tests/test_budget_api.py` § `"test_set_allocation_missing_month_returns_400"` / `"test_set_allocation_missing_amount_returns_400"` — covers § POST allocations error cases: missing fields.
+- `tests/test_budget_api.py` § `"test_set_allocation_invalid_amount_format_returns_400"` — covers § POST allocations error case: invalid decimal.
+- `tests/test_budget_api.py` § `"test_set_allocation_negative_amount_returns_400"` — covers § POST allocations error case: negative amount.
+- `tests/test_budget_api.py` § `"test_set_allocation_invalid_month_format_returns_400"` — covers § POST allocations error case: invalid month.
+- `tests/test_budget_api.py` § `"test_get_budget_returns_ready_to_assign_and_categories"` — covers § GET /api/budget contract.
+- `tests/test_budget_api.py` § `"test_get_budget_without_month_param_defaults_to_current_month"` — covers § GET /api/budget default-month behavior.
+- `tests/test_budget_api.py` § `"test_get_budget_without_token_returns_401"` — covers § GET /api/budget error case: no token.
+- `tests/test_budget_api.py` § `"test_get_budget_invalid_month_format_returns_400"` — covers § GET /api/budget error case: invalid month.
+- `tests/test_budget_api.py` § `"test_get_budget_only_shows_authenticated_users_categories"` — covers § per-user isolation (not a separately listed error case, but implied by the IDOR/isolation requirement in context/security-requirements.md).
+
+18 of 19 tests fail with 404 (no routes registered yet) — confirmed red before commit. The 19th is documented above.
 
 ## Changes
 - 001 (2026-08-10) — initial contract, second slice of `changes/001-api-spa-rewrite/plan.md`.

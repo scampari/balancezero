@@ -32,3 +32,14 @@ def test_user(client):
     db.session.add(user)
     db.session.commit()
     return user
+
+
+@pytest.fixture()
+def access_token(client, test_user):
+    response = client.post("/api/login", json={"username": TEST_USERNAME, "password": TEST_PASSWORD})
+    return response.get_json()["access_token"]
+
+
+@pytest.fixture()
+def auth_headers(access_token):
+    return {"Authorization": f"Bearer {access_token}"}
