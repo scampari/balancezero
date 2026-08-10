@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 
 interface AuthContextValue {
   accessToken: string | null
@@ -12,7 +12,8 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null)
-  return <AuthContext.Provider value={{ accessToken, setAccessToken }}>{children}</AuthContext.Provider>
+  const value = useMemo(() => ({ accessToken, setAccessToken }), [accessToken])
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
 export function useAuth(): AuthContextValue {

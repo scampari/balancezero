@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ApiError, login } from '../api/client'
+import { login } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 export function LoginPage() {
@@ -18,7 +18,9 @@ export function LoginPage() {
       setAccessToken(accessToken)
       navigate('/budget')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
+      // ApiError's message already carries a sensible fallback (see errorMessage()
+      // in client.ts) — no need to duplicate that string here.
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
     }
   }
 

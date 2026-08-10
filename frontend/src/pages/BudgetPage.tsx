@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { type Budget, ApiError, getBudget, refresh } from '../api/client'
+import { type Budget, getBudgetWithAutoRefresh } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 export function BudgetPage() {
@@ -11,32 +11,24 @@ export function BudgetPage() {
   useEffect(() => {
     let cancelled = false
 
-    async function load() {
-      if (!accessToken) {
-        navigate('/login', { replace: true })
-        return
-      }
-      try {
-        const data = await getBudget(accessToken)
+    if (!accessToken) {
+      navigate('/login', { replace: true })
+      return
+    }
+
+    getBudgetWithAutoRefresh(accessToken, setAccessToken)
+      .then((data) => {
         if (!cancelled) setBudget(data)
-      } catch (err) {
-        // Expired access token: refresh once using the httpOnly cookie and
-        // retry, rather than bouncing the user to login for a routine expiry.
-        if (err instanceof ApiError && err.status === 401) {
-          const refreshed = await refresh()
-          if (refreshed && !cancelled) {
-            setAccessToken(refreshed.accessToken) // effect re-runs with the new token
-            return
-          }
-        }
+      })
+      .catch(() => {
+        // Either not a 401, or refresh itself failed — either way, not
+        // recoverable here. Send the user back to login.
         if (!cancelled) {
           setAccessToken(null)
           navigate('/login', { replace: true })
         }
-      }
-    }
+      })
 
-    load()
     return () => {
       cancelled = true
     }

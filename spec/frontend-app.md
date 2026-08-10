@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: [auth.md, budget-api.md]
 ---
 
@@ -59,3 +59,4 @@ All 4 confirmed red before commit — no login form or routing exists yet. The e
 
 ## Changes
 - 001 (2026-08-10) — initial contract, third slice of `changes/001-api-spa-rewrite/plan.md`.
+- 001 (2026-08-10) — built. Real React app (api client, auth context, login/budget pages, router). All 4 e2e tests green against the real Flask backend and real browser. Full backend suite (36 tests) unaffected.
