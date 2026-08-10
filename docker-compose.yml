@@ -12,3 +12,25 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
+
+  # Separate from test-db on purpose: pytest and the e2e suite both drop/recreate
+  # test-db's tables routinely (see conftest.py, seed_e2e.py). Real local data
+  # needs its own database that nothing ever wipes automatically.
+  dev-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: balancezero_dev
+      POSTGRES_PASSWORD: balancezero_dev
+      POSTGRES_DB: balancezero_dev
+    ports:
+      - "55433:5432"
+    volumes:
+      - dev_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U balancezero_dev"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+volumes:
+  dev_db_data:
