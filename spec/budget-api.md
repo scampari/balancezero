@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: [auth.md]
 ---
 
@@ -87,3 +87,4 @@ Converts the existing server-rendered budget routes (`create_category`, `set_all
 
 ## Changes
 - 001 (2026-08-10) — initial contract, second slice of `changes/001-api-spa-rewrite/plan.md`.
+- 001 (2026-08-10) — built. New `budget_api.py` blueprint; old server-rendered routes, templates, and flask_wtf removed. All 19 tests green (36 total with auth.md's suite, no regressions).
