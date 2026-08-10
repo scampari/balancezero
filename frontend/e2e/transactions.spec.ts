@@ -37,18 +37,19 @@ test.describe('transactions page', () => {
     // Arrange
     await login(page)
 
-    // Act
-    await page.goto('/transactions')
+    // Act — client-side navigation via the app's own link, not page.goto()
+    // (a hard navigation would remount the app and lose the in-memory token)
+    await page.getByRole('link', { name: 'Transactions' }).click()
 
     // Assert — real data from the real API, not hardcoded
     await expect(page.getByText('E2E Grocery Run')).toBeVisible()
     await expect(page.getByText('-42.50')).toBeVisible()
   })
 
-  test('changing category persists without a page reload', async ({ page }) => {
+  test('changing category persists', async ({ page }) => {
     // Arrange
     await login(page)
-    await page.goto('/transactions')
+    await page.getByRole('link', { name: 'Transactions' }).click()
     const row = page.getByRole('row', { name: /E2E Grocery Run/ })
     const select = row.getByRole('combobox')
 
@@ -60,9 +61,14 @@ test.describe('transactions page', () => {
       expect(await selectedOptionText(select)).toBe('Groceries')
     }).toPass()
 
-    // Assert — actually persisted server-side, not just local UI state
-    await page.reload()
-    const reloadedSelect = page.getByRole('row', { name: /E2E Grocery Run/ }).getByRole('combobox')
-    expect(await selectedOptionText(reloadedSelect)).toBe('Groceries')
+    // Assert — actually persisted server-side, not just local UI state.
+    // Navigate away and back via the app's own links (not a browser reload —
+    // the access token is deliberately memory-only, so a real reload
+    // legitimately loses the session, which is a separate, accepted tradeoff).
+    await page.getByRole('link', { name: 'Budget' }).click()
+    await expect(page).toHaveURL(/\/budget$/)
+    await page.getByRole('link', { name: 'Transactions' }).click()
+    const revisitedSelect = page.getByRole('row', { name: /E2E Grocery Run/ }).getByRole('combobox')
+    expect(await selectedOptionText(revisitedSelect)).toBe('Groceries')
   })
 })

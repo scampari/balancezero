@@ -23,11 +23,11 @@ Playwright e2e, same real-backend/real-browser approach as `frontend-app.md`.
 **Action:** Log in, navigate to `/transactions`.
 **Expected output:** The seeded transaction's description and amount are visible on the page.
 
-### Changing a transaction's category persists without a page reload
+### Changing a transaction's category persists
 
 **Setup:** Same seeded state — one uncategorized transaction, one category available to assign.
 **Action:** On `/transactions`, select "Groceries" from the seeded transaction's category dropdown.
-**Expected output:** The dropdown shows "Groceries" selected, without a page reload. Reloading the page independently confirms the category stuck (proves it actually called the real API, not just local UI state).
+**Expected output:** The dropdown shows "Groceries" selected immediately, without a page reload. Navigating away (to `/budget`) and back via the app's own links, then re-checking the dropdown, confirms the category stuck server-side — proves it actually called the real API, not just local UI state. (Not a browser reload: the access token is deliberately memory-only per `frontend-app.md`'s design, so a real page reload legitimately loses the session — that's an accepted tradeoff, not something this test should trip over.)
 
 ## Notes
 - Reuses the existing `AuthContext`/API-client pattern from `frontend-app.md` — no new auth plumbing needed, `/transactions` is just another protected page like `/budget`.

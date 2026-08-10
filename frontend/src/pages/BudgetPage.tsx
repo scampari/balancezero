@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { type Budget, getBudgetWithAutoRefresh } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
@@ -39,6 +39,9 @@ export function BudgetPage() {
   return (
     <div>
       <h1>Budget</h1>
+      <nav>
+        <Link to="/transactions">Transactions</Link>
+      </nav>
       <p>Ready to Assign</p>
       <p>${Number(budget.ready_to_assign).toFixed(2)}</p>
       <ul>
