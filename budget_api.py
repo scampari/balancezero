@@ -2,23 +2,14 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, jsonify, request
-from flask_jwt_extended import get_jwt_identity, jwt_required
+from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import IntegrityError
 
+from api_helpers import current_user_id as _current_user_id
+from api_helpers import parse_month as _parse_month
 from models import Account, BudgetAllocation, Category, Transaction, db
 
 budget_bp = Blueprint("budget_api", __name__, url_prefix="/api")
-
-
-def _current_user_id():
-    return int(get_jwt_identity())
-
-
-def _parse_month(raw_month):
-    try:
-        return date.fromisoformat(raw_month)
-    except (TypeError, ValueError):
-        return None
 
 
 def _parse_amount(raw_amount):

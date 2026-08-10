@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: [auth.md, budget-api.md]
 ---
 
@@ -68,3 +68,4 @@ Lets a user see their transactions and assign them to a budget category (or unca
 
 ## Changes
 - 002 (2026-08-10) — initial contract, first slice of `changes/002-simplefin-and-transactions/plan.md`.
+- 002 (2026-08-10) — built. New transactions_api.py. Refactor extracted _current_user_id/_parse_month (verbatim duplicates of budget_api.py's) into shared api_helpers.py. All 14 tests green, 50/50 full suite.
