@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: [transactions.md, frontend-app.md]
 ---
 
@@ -42,3 +42,4 @@ Both confirmed red before commit — no `/transactions` route exists yet. Verifi
 
 ## Changes
 - 002 (2026-08-10) — initial contract, frontend counterpart to `transactions.md` within `changes/002-simplefin-and-transactions/plan.md`.
+- 002 (2026-08-10) — built. Both e2e tests green (interleaved-execution verified, no cross-file pollution). Discovered and fixed a real test-design conflict: `page.reload()` can't be used to verify persistence against this app's memory-only-token architecture — fixed by testing via client-side navigation instead.
