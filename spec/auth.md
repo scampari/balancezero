@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: []
 ---
 
@@ -95,3 +95,4 @@ All 16 tests currently fail with 404 (no routes registered yet) — confirmed re
 
 ## Changes
 - 001 (2026-08-10) — initial contract, bootstrapped from `changes/001-api-spa-rewrite/plan.md`.
+- 001 (2026-08-10) — built. V0a: `RefreshToken` model + migration. V0b: `auth_api.py` blueprint (login/refresh/logout), flask-jwt-extended for access tokens, custom error handlers normalizing all auth failures to 401 (library default was 422 for malformed tokens), CORS + CSRF-exemption wiring in `app.py`. All 16 tests green.

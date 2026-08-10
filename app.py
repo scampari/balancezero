@@ -1,14 +1,17 @@
 
 import os
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from functools import wraps
 
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
 from flask_wtf import CSRFProtect
 from werkzeug.security import check_password_hash
 
+from auth_api import auth_bp, register_jwt_error_handlers
 from models import Account, BudgetAllocation, Category, Transaction, User, db
 
 app = Flask(__name__)
@@ -16,11 +19,29 @@ app.secret_key = os.environ["SECRET_KEY"]
 app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
     "DATABASE_URL", "sqlite:///" + os.path.join(app.instance_path, "balancezero.db")
 )
+app.config["JWT_SECRET_KEY"] = app.secret_key
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=15)
+# Origin allowed to make credentialed cross-origin requests to /api/* (the React dev
+# server, and later the deployed frontend). Also used by auth_api's CSRF origin check.
+app.config["ALLOWED_ORIGIN"] = os.environ.get("ALLOWED_ORIGIN", "http://localhost:5173")
 
 os.makedirs(app.instance_path, exist_ok=True)
 db.init_app(app)
 migrate = Migrate(app, db)
 csrf = CSRFProtect(app)
+jwt = JWTManager(app)
+register_jwt_error_handlers(jwt)
+CORS(
+    app,
+    resources={r"/api/*": {"origins": app.config["ALLOWED_ORIGIN"]}},
+    supports_credentials=True,
+)
+
+app.register_blueprint(auth_bp)
+# /api/* is bearer-token authenticated, not cookie/session-based, so it doesn't need
+# form CSRF tokens — see spec/auth.md's Notes for the narrower origin-check that
+# /api/refresh and /api/logout use instead, since those two do touch a cookie.
+csrf.exempt(auth_bp)
 
 
 def login_required(view):

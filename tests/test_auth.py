@@ -122,7 +122,7 @@ def test_refresh_without_cookie_returns_401(client, test_user):
 
 def test_refresh_with_invalid_cookie_returns_401(client, test_user):
     # Arrange
-    client.set_cookie("localhost", "refresh_token", "not-a-real-token")
+    client.set_cookie("refresh_token", "not-a-real-token")
 
     # Act
     response = client.post("/api/refresh")
@@ -134,11 +134,11 @@ def test_refresh_with_invalid_cookie_returns_401(client, test_user):
 def test_refresh_with_reused_rotated_out_cookie_returns_401(client, test_user):
     # Arrange — log in, capture the original refresh cookie, then refresh once (which rotates it)
     client.post("/api/login", json={"username": TEST_USERNAME, "password": TEST_PASSWORD})
-    original_refresh_cookie = client.get_cookie("refresh_token")
+    original_refresh_cookie = client.get_cookie("refresh_token", path="/api")
     client.post("/api/refresh")  # rotates the refresh token
 
     # Act — reuse the original (now stale) refresh cookie
-    client.set_cookie("localhost", "refresh_token", original_refresh_cookie.value)
+    client.set_cookie("refresh_token", original_refresh_cookie.value, path="/api")
     reused_response = client.post("/api/refresh")
 
     # Assert
