@@ -1,7 +1,7 @@
 # Slicing: JSON API + React SPA + JWT auth rewrite
 
 > Date: 2026-08-10
-> Status: planning
+> Status: complete — all 3 declared specs (auth.md, budget-api.md, frontend-app.md) built, 36 backend + 4 e2e tests green.
 
 ## What & Why
 
