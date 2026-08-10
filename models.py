@@ -16,6 +16,7 @@ class User(db.Model):
 
     accounts = db.relationship("Account", backref="user", cascade="all, delete-orphan")
     categories = db.relationship("Category", backref="user", cascade="all, delete-orphan")
+    refresh_tokens = db.relationship("RefreshToken", backref="user", cascade="all, delete-orphan")
 
 
 class Account(db.Model):
@@ -78,3 +79,14 @@ class BudgetAllocation(db.Model):
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (db.UniqueConstraint("category_id", "month", name="uq_allocation_category_month"),)
+
+
+class RefreshToken(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    # SHA-256 hex digest of the raw token — never store the raw token itself,
+    # same principle as password hashing (see spec/auth.md).
+    token_hash = db.Column(db.String(64), nullable=False, unique=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    revoked_at = db.Column(db.DateTime, nullable=True)
