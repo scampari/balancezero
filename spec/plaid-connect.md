@@ -123,10 +123,14 @@ un-skipped (reasoning "no Plaid call needed to hit our own route") but a
 call to Plaid — moved to `@requires_plaid_sandbox`, alongside the 3
 already there (`test_connect_with_valid_public_token_succeeds`,
 `test_reconnect_replaces_existing_connection`,
-`test_status_returns_true_after_connecting`). All 4 need real
-`PLAID_CLIENT_ID`/`PLAID_SECRET` Sandbox credentials, not present in this
-environment — see PR #3's blocking comment for what's needed to lift the
-skip and verify these for real.
+`test_status_returns_true_after_connecting`).
+
+**Fully verified.** Real `PLAID_CLIENT_ID`/`PLAID_SECRET` Sandbox
+credentials became available after build — all 12 tests pass for real
+against live Plaid Sandbox (12 passed, 0 skipped, 0 failed). The
+`@requires_plaid_sandbox` skip condition remains in the test file for
+future environments (CI, a fresh clone) that don't have Sandbox
+credentials set — it's not dead code, just not currently exercised.
 
 ## Notes
 - Created by auto-plan-grill from `changes/004-plaid-and-self-host/plan.md`
