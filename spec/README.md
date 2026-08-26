@@ -12,14 +12,17 @@ YNAB-style zero-based budgeting app. See `context/mvp-scope.md` for full feature
 | `transactions.md` | built | auth, budget-api |
 | `transactions-ui.md` | built | transactions, frontend-app |
 | `simplefin-connect.md` | superseded by `plaid-connect.md` | auth |
+| `simplefin-sync.md` | superseded by `plaid-sync.md` | simplefin-connect |
 | `plaid-connect.md` | planned | auth |
 | `plaid-sync.md` | planned | plaid-connect |
 | `self-hosted-deploy.md` | planned | frontend-app, budget-api |
 
 SimpleFIN was replaced by Plaid and AWS EKS by a self-hosted k3s-over-Tailscale
 deploy target, 2026-08-26 — see `changes/004-plaid-and-self-host/` for the
-grill and plan behind the pivot. `simplefin-sync.md` never made it past a
-stub on an unmerged branch (draft PR #1) and isn't part of this history.
+grill and plan behind the pivot. `simplefin-sync.md` merged (PR #1) as a
+stub — no contract, never built — shortly before `plaid-sync.md` superseded
+it (PR #2); both PRs landed on `main` in that order, so it's marked
+superseded here rather than omitted.
 
 Not yet sliced: CI/CD pipeline to the self-hosted cluster (explicit
 non-goal of `changes/004`, see its plan for why). Each gets its own spec

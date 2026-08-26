@@ -70,23 +70,16 @@ change if wrong.
 - **Resolution:** _(filled once test-planning/build locks the Ingress
   design)_
 
-### Sandbox OAuth-institution coverage
-- **Status:** assumption-accepted
-- **Confidence:** medium
-- **Slices affected:** `plaid-connect.md`
-- **What I'm assuming:** Plaid's Sandbox test institutions are mostly
-  non-OAuth, so `plaid-connect.md` can be built and tested without
-  `self-hosted-deploy.md` existing yet (no stable redirect URI needed for
-  Sandbox testing).
-- **Rationale:** General knowledge of Plaid Sandbox, not verified against
-  current docs specifically for this point — flagged rather than asserted
-  as fact.
-- **If wrong, impact:** Would add a real dependency from `plaid-connect.md`
-  onto `self-hosted-deploy.md` (or a placeholder redirect URI) earlier than
-  planned. Test-planning should verify this directly against Plaid's
-  current Sandbox docs before writing the contract.
-- **Correction:** _(filled by human if wrong)_
-- **Resolution:** _(filled once test-planning verifies)_
+### ~~Sandbox OAuth-institution coverage~~ — RESOLVED, removed from open questions
+- **Status:** resolved (was assumption-accepted, medium confidence)
+- **Resolved by:** auto-test-planning, 2026-08-26, verified against current
+  Plaid docs (not general knowledge this time). Plaid Sandbox uses "a
+  single generic OAuth flow rather than institution-specific OAuth
+  behavior," and accepts `http://localhost` redirect URIs in Sandbox
+  (Production requires `https`). `plaid-connect.md` does NOT need
+  `self-hosted-deploy.md`'s real hostname to exist first — confirmed, not
+  just assumed. Confidence raised to high. See `spec/plaid-connect.md`'s
+  Notes for the full resolution.
 
 ### No data migration for existing local SimpleFIN connection
 - **Status:** assumption-accepted
