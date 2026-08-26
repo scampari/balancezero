@@ -47,13 +47,18 @@ sync), looping while the response's `has_more` is `true` — accumulating
 each page isn't required; each page is applied and committed
 independently (see Done-when). Per page: upserts `Account` rows (keyed by
 `(user_id, plaid_account_id)`, the constraint added in `plaid-connect.md`'s
-migration) with fresh `balance`/`available_balance`/`balance_date`;
-upserts `added`/`modified` transactions (keyed by
-`(account_id, plaid_transaction_id)`) — SimpleFIN-owned fields only
-(`amount`, `description`, `posted_at`, `pending`), never `category_id`;
-hard-deletes `Transaction` rows named in `removed`. After each page,
-`User.plaid_sync_cursor` is updated to that page's `next_cursor` and
-committed — not deferred to the end of the whole sync.
+migration) from each account object's `balances.current` →
+`Account.balance`, `balances.available` → `available_balance`; upserts
+`added`/`modified` transactions (keyed by `(account_id,
+plaid_transaction_id)`) — SimpleFIN-owned fields only (`amount`,
+`description`, `posted_at`, `pending`), never `category_id`. **`amount`
+must be negated** — Plaid's sign convention is the opposite of this
+column's (see Notes, "Sign convention is flipped"). `description` maps
+from Plaid's `name` field (verified via a real Sandbox transaction; Plaid
+has no field literally called `description`). `posted_at` maps from
+Plaid's `date` field. Hard-deletes `Transaction` rows named in `removed`.
+After each page, `User.plaid_sync_cursor` is updated to that page's
+`next_cursor` and committed — not deferred to the end of the whole sync.
 
 #### Error cases
 - **When no/invalid access token, Then** `401`.
@@ -75,6 +80,30 @@ committed — not deferred to the end of the whole sync.
 No test exists yet — auto-test-writer will produce these next.
 
 ## Notes
+- **Sign convention is flipped from SimpleFIN's — the single most
+  important correctness detail in this slice.** Plaid: positive `amount` =
+  money leaving the account; negative = money entering. This app's
+  `Transaction.amount` keeps SimpleFIN's convention (positive = inflow),
+  unchanged. **Negate Plaid's `amount` on every write.** Caught by
+  inspecting a real Sandbox transaction directly rather than assuming —
+  see `context/plaid-integration.md`. Get this backwards and every synced
+  transaction silently corrupts the budget math throughout the app, not
+  just the transactions list.
+- **Real field mapping, verified against a live Sandbox transaction**
+  (`user_transactions_dynamic`/`pass_good` test user): transaction
+  `name` → our `description` (Plaid has no field called `description`);
+  `date` → our `posted_at`; `amount` → our `amount`, negated (see above);
+  `pending` → our `pending` directly, no transform. Account `balances.current`
+  → our `balance`; `balances.available` → our `available_balance`.
+- **Sandbox item initialization is asynchronous** — empirically, a freshly
+  exchanged Sandbox `access_token` returns zero transactions for several
+  seconds (`transactions_update_status` starts pending, reaches
+  `INITIAL_UPDATE_COMPLETE` once ready). Not just a testing quirk — a real
+  user's very first sync immediately after connecting could plausibly hit
+  the same window and get 0 results. Not treated as an error case in this
+  contract (a `200` with all-zero counts is still a valid, honest
+  response) but flagged here so it isn't mistaken for a bug during build
+  or manual testing — try again after a few seconds.
 - Created by auto-plan-grill from `changes/004-plaid-and-self-host/plan.md`
   — read that plan's `## Grill` before writing the contract. Several
   decisions there are corrections to what `spec/simplefin-sync.md` would

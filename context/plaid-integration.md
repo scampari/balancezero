@@ -6,6 +6,19 @@ for the full interrogation). Not yet implemented; re-verify details below
 against current Plaid docs before implementing, same discipline that caught
 the previous provider's doc drift.
 
+- **SIGN CONVENTION IS FLIPPED FROM SIMPLEFIN'S — verified against Plaid's
+  docs during `plaid-sync.md` test-writing, 2026-08-26.** Plaid: positive
+  `amount` = money **leaving** the account (debit/outflow); negative =
+  money entering (credit/inflow). SimpleFIN was the opposite (positive =
+  inflow), and this app's own `Transaction.amount` column follows
+  SimpleFIN's convention (positive = inflow) — unchanged, not being
+  renegotiated. **`plaid-sync.md`'s upsert must negate Plaid's `amount`
+  when writing to `Transaction.amount`, always.** Caught only because a
+  real Sandbox transaction was inspected directly rather than assumed;
+  `models.py`'s column comment briefly claimed the opposite (introduced
+  during `plaid-connect.md`'s build, carried over from the SimpleFIN-era
+  comment without re-verification) — fixed there too.
+
 - **Auth flow**: Plaid Link (Plaid's hosted JS/React widget) runs in the
   browser and talks to Plaid directly, returning a short-lived
   `public_token` to the frontend. The frontend sends that to our backend,

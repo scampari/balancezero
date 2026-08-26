@@ -60,7 +60,14 @@ class Transaction(db.Model):
     # can upsert instead of duplicating.
     plaid_transaction_id = db.Column(db.String(120), nullable=True)
     posted_at = db.Column(db.Date, nullable=False)
-    # Positive = inflow, negative = outflow — matches Plaid's own sign convention.
+    # Positive = inflow, negative = outflow (this app's own convention, unchanged
+    # from the SimpleFIN era). CORRECTED — this comment previously claimed this
+    # "matches Plaid's own sign convention," carried over from the SimpleFIN-era
+    # comment without re-verifying: Plaid's is the OPPOSITE (positive = money
+    # LEAVING the account, negative = money entering — confirmed against Plaid's
+    # docs during plaid-sync.md's test-writing). plaid-sync.md's upsert MUST
+    # negate Plaid's amount when writing to this column, or every synced
+    # transaction's sign is silently backwards. See spec/plaid-sync.md's Notes.
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(255), nullable=False)
     pending = db.Column(db.Boolean, nullable=False, default=False)
