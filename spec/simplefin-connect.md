@@ -1,9 +1,17 @@
 ---
-status: built
+status: superseded
 depends_on: [auth.md]
+superseded_by: plaid-connect.md
 ---
 
-# SimpleFIN connect: Setup Token → encrypted Access URL
+# SimpleFIN connect: Setup Token → encrypted Access URL (superseded)
+
+**Superseded 2026-08-26 by `spec/plaid-connect.md`** — SimpleFIN replaced
+by Plaid, full replacement. See
+`changes/004-plaid-and-self-host/grill-findings.md` for the pivot's
+rationale and `changes/004-plaid-and-self-host/plan.md` for the migration
+that renames this spec's columns. Kept below for history; do not build new
+work against this contract.
 
 ## Does
 Lets the real (non-demo) user connect a SimpleFIN Bridge account: paste a Setup Token, the server exchanges it for an Access URL and stores it encrypted at rest (SimpleFIN's own stated requirement — see `context/simplefin-integration.md`). This is what `simplefin-sync.md` will use to actually pull transactions in the next slice.
