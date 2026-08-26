@@ -20,6 +20,25 @@ the previous provider's doc drift.
   webhook required. Our server calls it on its own schedule/on-demand.
   Webhooks (`SYNC_UPDATES_AVAILABLE`) exist for push-driven updates instead
   of polling, but are explicitly NOT used here — see "Self-hosting" below.
+  **Correction (2026-08-26, verified during `plaid-sync.md` planning):**
+  this is NOT the same shape as SimpleFIN's `start-date`/`end-date`
+  windowing. There's no date range at all — first call omits `cursor`
+  and gets the full history (90-day default window); every call after
+  passes the previous response's `next_cursor` and gets only what
+  changed. No 5-day-overlap heuristic needed; the cursor model is
+  idempotent and complete by construction. Response has `added`,
+  `modified`, **and `removed`** arrays — `removed` is Plaid's own
+  explicit signal (`transaction_id` + `account_id`) that a transaction
+  is genuinely gone, not an absence-from-a-window ambiguity. This is a
+  materially different (and simpler) mechanism than what
+  `simplefin-sync.md` was designed around — see
+  `changes/004-plaid-and-self-host/plan.md`'s Grill for what this changes.
+- **Rate limits are NOT SimpleFIN's shape either.** Verified: Production
+  `/transactions/sync` is limited to 50 requests/minute per Item, 2,500/min
+  per client — not a 24/day cap. For a single-user, on-demand/polling app
+  this is essentially unreachable under normal use. The client-side
+  rate-limiter design (rolling-window counter on `User`) planned for
+  SimpleFIN is not needed for Plaid at all — dropped, not carried over.
 - **Cardinality**: one `access_token`/`item_id` per linked institution
   (Plaid's "Item"). We're keeping single-institution-per-user, matching the
   current SimpleFIN-era scope (`context/mvp-scope.md` never called for
