@@ -15,6 +15,9 @@ class User(db.Model):
     plaid_access_token_encrypted = db.Column(db.LargeBinary, nullable=True)
     # Plaid's Item identifier — not a secret, stored plaintext alongside the encrypted token.
     plaid_item_id = db.Column(db.String(120), nullable=True)
+    # /transactions/sync cursor — Item-scoped (covers every account under it),
+    # not per-account; null means "never synced." See spec/plaid-sync.md's Notes.
+    plaid_sync_cursor = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     accounts = db.relationship("Account", backref="user", cascade="all, delete-orphan")

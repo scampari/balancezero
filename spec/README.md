@@ -14,7 +14,7 @@ YNAB-style zero-based budgeting app. See `context/mvp-scope.md` for full feature
 | `simplefin-connect.md` | superseded by `plaid-connect.md` | auth |
 | `simplefin-sync.md` | superseded by `plaid-sync.md` | simplefin-connect |
 | `plaid-connect.md` | built | auth |
-| `plaid-sync.md` | planned | plaid-connect |
+| `plaid-sync.md` | built | plaid-connect |
 | `self-hosted-deploy.md` | planned | frontend-app, budget-api |
 
 SimpleFIN was replaced by Plaid and AWS EKS by a self-hosted k3s-over-Tailscale

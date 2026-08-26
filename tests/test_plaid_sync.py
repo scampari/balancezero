@@ -197,17 +197,36 @@ def test_sync_populates_accounts_and_transactions(client, test_user, auth_header
 
 @requires_plaid_sandbox
 def test_sync_is_incremental_on_second_call(client, test_user, auth_headers):
-    # Arrange — first sync populates data and saves the cursor
+    # Arrange — real connection, then sync repeatedly until Plaid's
+    # asynchronous historical update finishes landing (a second sync can
+    # legitimately report MORE transactions while it's still arriving —
+    # that's real new data, not a cursor failure; observed empirically as
+    # a race that failed this test ~1 run in 3 when it asserted "second
+    # call == 0" immediately). Steady state = a sync that reports nothing
+    # new. Two setup corrections were made to this test while confirming
+    # green, both to setup/timing, neither to the behavior under test:
+    # (1) it originally omitted the connect step and 409'd; (2) the
+    # historical-update race described above.
+    _connect_with_dynamic_test_data(client, auth_headers)
     first_response = _sync_until_data_present(client, auth_headers)
     assert first_response.status_code == 200, f"setup sync failed: {first_response.status_code}"
     assert first_response.get_json()["transactions_added"] >= 1
 
-    # Act — sync again immediately, nothing new has happened at Plaid
+    deadline = time.monotonic() + _SANDBOX_READY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        settle_response = client.post("/api/plaid/sync", headers=auth_headers)
+        assert settle_response.status_code == 200
+        if settle_response.get_json()["transactions_added"] == 0:
+            break
+        time.sleep(_SANDBOX_READY_POLL_INTERVAL_SECONDS)
+
+    # Act — sync once more from steady state
     second_response = client.post("/api/plaid/sync", headers=auth_headers)
 
     # Assert — proves the cursor was persisted and reused: a full
-    # first-time pull would show the same transactions as "added" again,
-    # an incremental pull with a saved cursor shows none.
+    # first-time pull would show the whole history as "added" again
+    # (100s of transactions), an incremental pull with a saved cursor
+    # shows nothing new.
     assert second_response.status_code == 200
     body = second_response.get_json()
     assert body["transactions_added"] == 0

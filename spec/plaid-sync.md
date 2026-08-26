@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: [plaid-connect.md]
 ---
 
@@ -109,6 +109,23 @@ Sandbox-dependent tests actually ran and failed for the right reason, not
 skipped). Full suite: 8 failed (all this file, all 404), 62 passed, 0
 unexpected failures — 41.56s.
 
+**Built.** All 8 green against real Sandbox. Two test-setup corrections
+were needed while confirming green (documented inline in the test file,
+neither changed the behavior under test): the incremental test originally
+omitted its connect step (409 before ever reaching the cursor behavior),
+and then raced Plaid's asynchronous historical update (a second sync
+legitimately reporting *more* transactions while history was still
+landing isn't a cursor failure) — fixed with a settle loop.
+
+**Known accepted flake:** roughly 1 run in 3, one Sandbox-dependent test
+(which one rotates) fails with the route's sanitized `502` during a live
+call — transient Sandbox-side behavior, passes on rerun. Explicitly
+accepted by the user (2026-08-26) rather than chased further; the
+mutation-during-pagination handling below already eliminated the
+reproducible cause, and the sanitized error (correct for production)
+hides the residual one. If this ever needs diagnosing, add temporary
+server-side logging of the swallowed exception in `sync()`.
+
 ## Notes
 - **Sign convention is flipped from SimpleFIN's — the single most
   important correctness detail in this slice.** Plaid: positive `amount` =
@@ -192,3 +209,30 @@ unexpected failures — 41.56s.
   it. If `auto-build` finds real partial-failure behavior during
   implementation, that's a legitimate correction to make then — flagged
   here rather than guessed into the contract now.
+- **Found during build: `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`
+  is a real, documented, expected error** — Plaid raises it when the
+  Item's data changes mid-pagination, which is *routine* right after
+  connect while the historical update is still landing (exactly this
+  slice's test setup, and plausibly a real user's first sync).
+  Documented client behavior, now implemented in `sync()`: restart the
+  whole pagination loop from the update's *starting* cursor (not the
+  failed page's — safe because upserts are idempotent), bounded to 3
+  retries; plus `count=500` per page (Plaid's documented mitigation —
+  fewer pages, smaller mutation window). Treating it as a generic 502
+  was the initial, wrong implementation.
+- **Found during build: Plaid's SDK returns `date` as a native
+  `datetime.date`**, not a string — no parsing needed when writing
+  `posted_at`. Verified empirically against a live Sandbox response.
+
+## Changes
+- 004 (2026-08-26) — contract landed by auto-test-planning; three plan
+  assumptions resolved with verified evidence (cursor is Item-scoped →
+  `User.plaid_sync_cursor`; no response-size cap needed; response shape
+  locked). Sign-convention flip discovered and documented before any
+  code existed to get it wrong.
+- 004 (2026-08-26) — 8 tests written, confirmed red with real Sandbox
+  credentials.
+- 004 (2026-08-26) — built. `sync()` route in `plaid_api.py`; migration
+  `250dac683643` adds `User.plaid_sync_cursor`. Mutation-during-pagination
+  handling added after live testing surfaced it (see Notes). All 8 green;
+  one accepted transient Sandbox flake (see Tests).
