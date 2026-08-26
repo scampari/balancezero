@@ -8,49 +8,37 @@ change if wrong.
 
 ## Assumptions (agent proceeding unless corrected)
 
-### Cursor storage granularity
-- **Status:** assumption-accepted
-- **Confidence:** medium
-- **Slices affected:** `plaid-sync.md`
-- **What I'm assuming:** `Account.plaid_sync_cursor` (per-account), not a
-  single cursor on `User`/Item.
-- **Rationale:** Plaid's `removed` array entries carry `account_id`
-  alongside `transaction_id`, which reads as account-relevant, but Plaid's
-  docs describe the cursor as tracking the Item as a whole. Genuinely
-  ambiguous from documentation alone.
-- **If wrong, impact:** Move the column from `Account` to `User`
-  (single-institution scope means there's exactly one of either right now)
-  — a one-column migration change, not a structural rework.
-- **Correction:** _(filled by human if wrong)_
-- **Resolution:** _(filled once test-planning verifies against real Plaid
-  Sandbox behavior)_
+### ~~Cursor storage granularity~~ — RESOLVED, removed from open questions
+- **Status:** resolved (was assumption-accepted, medium confidence)
+- **Resolved by:** auto-test-planning, 2026-08-26, verified against current
+  Plaid docs. The cursor is Item-scoped by default (one cursor for every
+  account under the Item); it only becomes per-account if requests filter
+  by `account_id`, which this project's contract doesn't do. Lives on
+  `User.plaid_sync_cursor`, not `Account`. The plan's original
+  `Account`-level guess was wrong — corrected in `spec/plaid-sync.md` and
+  `context/plaid-integration.md`.
 
-### Sync response shape
-- **Status:** assumption-accepted
-- **Confidence:** medium
-- **Slices affected:** `plaid-sync.md`
-- **What I'm assuming:** Structured counts —
+### ~~Sync response shape~~ — RESOLVED, removed from open questions
+- **Status:** resolved (was assumption-accepted, medium confidence)
+- **Resolved by:** auto-test-planning, 2026-08-26 — locked as
   `{"accounts_synced": N, "transactions_added": X, "transactions_modified":
-  Y, "transactions_removed": Z}` — exact keys TBD.
-- **Rationale:** Matches this codebase's established pattern (see
-  `changes/003-simplefin-sync/open-questions.md`'s equivalent item, same
-  reasoning carries over unchanged).
-- **If wrong, impact:** Response-shape-only change; nothing downstream
-  consumes it yet.
-- **Correction:** _(filled by human if wrong)_
-- **Resolution:** _(filled once test-planning locks it)_
+  Y, "transactions_removed": Z}` in `spec/plaid-sync.md`'s integration test
+  contract. Matches this codebase's established pattern of returning
+  meaningful shape rather than a bare status string.
 
-### Response body size cap
-- **Status:** assumption-accepted
-- **Confidence:** medium
-- **Slices affected:** `plaid-sync.md`
-- **What I'm assuming:** Bounded streamed read, low-single-digit-MB range —
-  unchanged reasoning from the SimpleFIN-era version of this same question.
-- **Rationale:** Carries forward the `/connect` security review's
-  unbounded-response-body finding proactively.
-- **If wrong, impact:** Constant tweak.
-- **Correction:** _(filled by human if wrong)_
-- **Resolution:** _(filled once test-planning locks it)_
+### ~~Response body size cap~~ — RESOLVED (not needed), removed from open questions
+- **Status:** resolved (was assumption-accepted, medium confidence) —
+  resolution differs from the original assumption
+- **Resolved by:** auto-test-planning, 2026-08-26. The original assumption
+  carried forward `/connect`'s unbounded-response-body defense "just in
+  case," without re-examining whether the trust-boundary reasoning that
+  already exempted `plaid-connect.md` from SimpleFIN's SSRF/redirect
+  defenses also exempted this call from the size-cap defense specifically.
+  It does: `/transactions/sync` goes through the same official SDK against
+  the same fixed, trusted, environment-selected Plaid host, never a
+  client-supplied URL. No size cap needed. See
+  `context/plaid-integration.md` and `spec/plaid-connect.md`'s Notes for
+  the underlying reasoning this reuses.
 
 ### Single-hostname, same-origin production topology
 - **Status:** assumption-accepted
