@@ -1,0 +1,16 @@
+# Backend image: Flask API under gunicorn.
+# Build from the repo root: docker build -f deploy/Dockerfile.backend -t balancezero-backend .
+FROM python:3.13-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt gunicorn
+
+COPY app.py api_helpers.py auth_api.py budget_api.py models.py plaid_api.py transactions_api.py seed_demo.py ./
+COPY migrations/ migrations/
+
+ENV FLASK_APP=app.py
+EXPOSE 5002
+
+CMD ["gunicorn", "--bind", "0.0.0.0:5002", "--workers", "2", "app:app"]

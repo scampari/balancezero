@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: balancezero
+spec:
+  clusterIP: None # headless — StatefulSet DNS
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: balancezero
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: balancezero
+            - name: POSTGRES_DB
+              value: balancezero
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: balancezero-secrets
+                  key: POSTGRES_PASSWORD
+            # Keep data under a subdir of the mount — postgres refuses to
+            # init into a lost+found-containing root.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "balancezero"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+  # PVC via k3s's built-in local-path provisioner — data survives pod
+  # restarts (spec/self-hosted-deploy.md's persistence contract).
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

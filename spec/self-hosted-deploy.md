@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: [frontend-app.md, budget-api.md]
 ---
 
@@ -153,3 +153,30 @@ empty pod list before checking readiness.
   target (raw datastore file, not `kubectl get secret`) while writing the
   script — see Notes. Ready for auto-build to stand up the cluster against
   it.
+- 004 (2026-08-26) — **built and verified: all 5 checks pass** against the
+  live cluster (`https://balancezero.tailbae83d.ts.net`). Deploy artifacts
+  in `deploy/` (Dockerfiles, k8s manifests, runbook). Deviations and
+  findings from the build, recorded rather than silently absorbed:
+  - **Host is k3d (k3s-in-Docker) on the dev Mac**, not bare k3s — k3s is
+    Linux-only and the tailnet has no Linux box. k3d runs the real k3s
+    distribution (v1.35.5+k3s1 here), `--secrets-encryption` included, so
+    the manifests/operator/runbook transfer verbatim to a dedicated box
+    later. Caveat acknowledged: a laptop is not an always-on server.
+  - **Path routing lives in nginx, not the Ingress** — the Tailscale
+    Ingress's multi-path support is underdocumented, so nginx (the
+    frontend container) is the single Ingress backend and proxies `/api`
+    to the backend Service itself. Same single-hostname/same-origin
+    contract, definitely-supported mechanism, mirrors the Vite dev proxy.
+  - **Operator proxies are tagged `tag:k8s-operator`**
+    (`proxyConfig.defaultTags` helm value), not the default `tag:k8s` —
+    the OAuth client was only granted the former, and the admin console's
+    visual editor made granting a second tag the harder path. First
+    deploy failed with "requested tags [tag:k8s] are invalid" until this.
+  - **Tailnet HTTPS certificates must be enabled** (admin console → DNS →
+    HTTPS Certificates) — off by default; the Ingress proxy joins the
+    tailnet fine but can't issue its TLS cert without it. Surfaced as an
+    `HTTPSNotEnabled` event on the Ingress.
+  - Two verify-script setup fixes during the first live run, behavior
+    under test unchanged: DB user/db parameterized (was hardcoded to the
+    local dev database's credentials), and a NotFound race in check 4's
+    `kubectl wait` during the delete→recreate gap.
