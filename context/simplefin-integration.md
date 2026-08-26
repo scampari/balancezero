@@ -1,4 +1,11 @@
-# SimpleFIN Bridge integration
+# SimpleFIN Bridge integration (superseded)
+
+**Superseded 2026-08-26 by `context/plaid-integration.md`** — SimpleFIN
+replaced by Plaid, full replacement decided after grilling the pivot (see
+`changes/004-plaid-and-self-host/grill-findings.md`). Kept here for history;
+`spec/simplefin-connect.md` (built) and `spec/simplefin-sync.md` (stub) will
+be marked superseded once their Plaid equivalents exist. Do not build new
+work against this file.
 
 Researched 2026-07-31 (see `~/Desktop/CICD/BALANCEZERO-SCOPE.md` for original notes). Sources: [SimpleFIN Protocol](https://www.simplefin.org/protocol.html), [SimpleFIN Bridge Developer Guide](https://beta-bridge.simplefin.org/info/developers) — re-verify against current docs before implementing, given time elapsed.
 
