@@ -77,7 +77,37 @@ After each page, `User.plaid_sync_cursor` is updated to that page's
   restart.
 
 ## Tests
-No test exists yet — auto-test-writer will produce these next.
+- `tests/test_plaid_sync.py` § `"test_sync_without_token_returns_401"` —
+  covers § error case: no access token.
+- `tests/test_plaid_sync.py` § `"test_sync_as_demo_user_returns_403"` —
+  covers § error case: demo user.
+- `tests/test_plaid_sync.py` § `"test_sync_without_connection_returns_409"`
+  — covers § error case: no Plaid connection.
+- `tests/test_plaid_sync.py` § `"test_sync_plaid_outage_returns_502"` —
+  covers § error case: Plaid network-level failure (mocked at the SDK
+  layer — a real `access_token` from a real connect, only the sync call
+  itself is mocked).
+- `tests/test_plaid_sync.py` § `"test_sync_populates_accounts_and_transactions"`
+  — covers § main contract: real Sandbox connect + sync, real DB
+  assertions (`accounts_synced` matches distinct `Account` rows).
+- `tests/test_plaid_sync.py` § `"test_sync_is_incremental_on_second_call"`
+  — covers § Done-when: cursor persistence, proven behaviorally (second
+  call shows 0 added) rather than by reading the column directly.
+- `tests/test_plaid_sync.py` § `"test_sync_upserts_modified_transaction_without_touching_category"`
+  — covers § contract: `modified` upsert, sign-convention negation (exact
+  value assertion), and `category_id` preservation. Mocked second sync
+  call (see file docstring for why); real connect, real first sync, real
+  categorization through the actual `/api/categories` +
+  `/api/transactions/<id>` endpoints.
+- `tests/test_plaid_sync.py` § `"test_sync_deletes_removed_transaction"` —
+  covers § contract: hard-delete on `removed`. Mocked second sync call,
+  same reasoning as above.
+
+8 of 8 confirmed red (404, no route yet) before commit — verified with
+real Plaid Sandbox credentials (not just structurally; the 5
+Sandbox-dependent tests actually ran and failed for the right reason, not
+skipped). Full suite: 8 failed (all this file, all 404), 62 passed, 0
+unexpected failures — 41.56s.
 
 ## Notes
 - **Sign convention is flipped from SimpleFIN's — the single most
@@ -89,6 +119,11 @@ No test exists yet — auto-test-writer will produce these next.
   see `context/plaid-integration.md`. Get this backwards and every synced
   transaction silently corrupts the budget math throughout the app, not
   just the transactions list.
+- **`accounts_synced` must count distinct accounts, not sum per page.**
+  Verified against a live Sandbox response: every page's `accounts` array
+  repeats the full account list, not just accounts touched on that page.
+  Naively summing `len(page["accounts"])` across pages would overcount
+  whenever `has_more` triggers more than one page.
 - **Real field mapping, verified against a live Sandbox transaction**
   (`user_transactions_dynamic`/`pass_good` test user): transaction
   `name` → our `description` (Plaid has no field called `description`);
