@@ -98,6 +98,61 @@ export async function patchTransactionCategory(
   return res.json()
 }
 
+export async function createCategory(accessToken: string, name: string): Promise<{ id: number; name: string }> {
+  const res = await request('/categories', { method: 'POST', body: JSON.stringify({ name }) }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
+export async function setAllocation(
+  accessToken: string,
+  categoryId: number,
+  month: string,
+  amount: string,
+): Promise<{ category_id: number; month: string; allocated_amount: string }> {
+  const res = await request(
+    `/categories/${categoryId}/allocations`,
+    { method: 'POST', body: JSON.stringify({ month, amount }) },
+    accessToken,
+  )
+  await throwIfError(res)
+  return res.json()
+}
+
+export interface Account {
+  id: number
+  name: string
+  currency: string
+  balance: string
+  available_balance: string | null
+  balance_date: string | null
+}
+
+export async function listAccounts(accessToken: string): Promise<{ accounts: Account[] }> {
+  const res = await request('/accounts', { method: 'GET' }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
+export interface PlaidSyncResult {
+  accounts_synced: number
+  transactions_added: number
+  transactions_modified: number
+  transactions_removed: number
+}
+
+export async function triggerPlaidSync(accessToken: string): Promise<PlaidSyncResult> {
+  const res = await request('/plaid/sync', { method: 'POST' }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
+export async function getPlaidStatus(accessToken: string): Promise<{ connected: boolean }> {
+  const res = await request('/plaid/status', { method: 'GET' }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
 /**
  * Wraps any authenticated call so an expired access token refreshes once and
  * retries — structurally capped at one retry (no recursion, no loop), unlike
@@ -150,4 +205,47 @@ export function patchTransactionCategoryWithAutoRefresh(
     accessToken,
     onTokenRefreshed,
   )
+}
+
+export function createCategoryWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  name: string,
+): Promise<{ id: number; name: string }> {
+  return withAutoRefresh((token) => createCategory(token, name), accessToken, onTokenRefreshed)
+}
+
+export function setAllocationWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  categoryId: number,
+  month: string,
+  amount: string,
+): Promise<{ category_id: number; month: string; allocated_amount: string }> {
+  return withAutoRefresh(
+    (token) => setAllocation(token, categoryId, month, amount),
+    accessToken,
+    onTokenRefreshed,
+  )
+}
+
+export function listAccountsWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+): Promise<{ accounts: Account[] }> {
+  return withAutoRefresh((token) => listAccounts(token), accessToken, onTokenRefreshed)
+}
+
+export function triggerPlaidSyncWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+): Promise<PlaidSyncResult> {
+  return withAutoRefresh((token) => triggerPlaidSync(token), accessToken, onTokenRefreshed)
+}
+
+export function getPlaidStatusWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+): Promise<{ connected: boolean }> {
+  return withAutoRefresh((token) => getPlaidStatus(token), accessToken, onTokenRefreshed)
 }

@@ -32,6 +32,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <NavLink to="/transactions" className={navLinkClass}>
               Transactions
             </NavLink>
+            <NavLink to="/accounts" className={navLinkClass}>
+              Accounts
+            </NavLink>
             <button
               type="button"
               onClick={handleLogout}
