@@ -8,7 +8,6 @@ from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchan
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.products import Products
-from plaid.exceptions import ApiException
 
 from api_helpers import current_user_id
 from models import User, db
@@ -22,16 +21,29 @@ plaid_bp = Blueprint("plaid_api", __name__, url_prefix="/api/plaid")
 # spec/plaid-connect.md's Notes.
 _GENERIC_PLAID_ERROR = {"error": "could not reach Plaid — please try again"}
 
+_PLAID_ENVIRONMENTS = {"sandbox": plaid.Environment.Sandbox, "production": plaid.Environment.Production}
+
+# Built once and reused, not per-request: PLAID_CLIENT_ID/SECRET/ENV are
+# fixed for the life of the process (read from app.config, itself read once
+# from env vars at startup), and the underlying SDK client owns its own
+# connection pool — rebuilding it per request meant a fresh pool (and
+# TCP/TLS handshake) on every single call for no benefit.
+_cached_client = None
+
 
 def _plaid_client():
-    configuration = plaid.Configuration(
-        host=plaid.Environment.Sandbox,
-        api_key={
-            "clientId": current_app.config["PLAID_CLIENT_ID"],
-            "secret": current_app.config["PLAID_SECRET"],
-        },
-    )
-    return plaid_api_client.PlaidApi(plaid.ApiClient(configuration))
+    global _cached_client
+    if _cached_client is None:
+        plaid_env = current_app.config.get("PLAID_ENV", "sandbox")
+        configuration = plaid.Configuration(
+            host=_PLAID_ENVIRONMENTS[plaid_env],
+            api_key={
+                "clientId": current_app.config["PLAID_CLIENT_ID"],
+                "secret": current_app.config["PLAID_SECRET"],
+            },
+        )
+        _cached_client = plaid_api_client.PlaidApi(plaid.ApiClient(configuration))
+    return _cached_client
 
 
 def _encrypt(raw_value):
@@ -39,11 +51,19 @@ def _encrypt(raw_value):
     return fernet.encrypt(raw_value.encode("utf-8"))
 
 
+def _load_non_demo_user():
+    """Returns the current user, or None if they're the demo user — callers
+    return 403 on None. Centralizes the "no real bank for the demo account"
+    guard now that three routes need it."""
+    user = db.session.get(User, current_user_id())
+    return None if user.is_demo else user
+
+
 @plaid_bp.route("/link-token", methods=["POST"])
 @jwt_required()
 def create_link_token():
-    user = db.session.get(User, current_user_id())
-    if user.is_demo:
+    user = _load_non_demo_user()
+    if user is None:
         return jsonify({"error": "the demo account cannot connect a real bank"}), 403
 
     request_body = LinkTokenCreateRequest(
@@ -55,7 +75,13 @@ def create_link_token():
     )
     try:
         response = _plaid_client().link_token_create(request_body)
-    except ApiException:
+    except Exception:
+        # Broad on purpose, scoped to just this one call: Plaid's SDK only
+        # raises ApiException for HTTP-error-status responses — a true
+        # outage (connection refused, DNS failure, timeout) raises a raw
+        # urllib3/network exception instead, which the spec's "Plaid
+        # outage" error case still expects sanitized to a 502, not a leaked
+        # 500.
         return jsonify(_GENERIC_PLAID_ERROR), 502
 
     return jsonify({"link_token": response["link_token"]}), 200
@@ -64,8 +90,8 @@ def create_link_token():
 @plaid_bp.route("/connect", methods=["POST"])
 @jwt_required()
 def connect():
-    user = db.session.get(User, current_user_id())
-    if user.is_demo:
+    user = _load_non_demo_user()
+    if user is None:
         return jsonify({"error": "the demo account cannot connect a real bank"}), 403
 
     data = request.get_json(silent=True) or {}
@@ -76,9 +102,10 @@ def connect():
     exchange_request = ItemPublicTokenExchangeRequest(public_token=public_token)
     try:
         response = _plaid_client().item_public_token_exchange(exchange_request)
-    except ApiException:
+    except Exception:
         # Never relay Plaid's raw error back to the client — same
-        # sanitization discipline as the SimpleFIN-era /connect.
+        # sanitization discipline as the SimpleFIN-era /connect. Broad
+        # except for the same reason as create_link_token above.
         return jsonify(_GENERIC_PLAID_ERROR), 502
 
     user.plaid_access_token_encrypted = _encrypt(response["access_token"])

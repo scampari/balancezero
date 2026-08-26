@@ -23,6 +23,10 @@ app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=15)
 app.config["PLAID_ENCRYPTION_KEY"] = os.environ["PLAID_ENCRYPTION_KEY"]
 app.config["PLAID_CLIENT_ID"] = os.environ["PLAID_CLIENT_ID"]
 app.config["PLAID_SECRET"] = os.environ["PLAID_SECRET"]
+# Safe to default (unlike the secrets above) — "sandbox" is the conservative
+# choice, and this slice's tests/contract only cover Sandbox. Set to
+# "production" explicitly once real bank linking goes live.
+app.config["PLAID_ENV"] = os.environ.get("PLAID_ENV", "sandbox")
 # Origin allowed to make credentialed cross-origin requests to /api/* (the React dev
 # server, and later the deployed frontend). Also used by auth_api's CSRF origin check.
 app.config["ALLOWED_ORIGIN"] = os.environ.get("ALLOWED_ORIGIN", "http://localhost:5173")
