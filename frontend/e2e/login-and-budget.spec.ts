@@ -16,7 +16,12 @@ test.describe('login and budget page (walking skeleton)', () => {
     // Assert — real data from the real /api/budget response, not hardcoded
     await expect(page).toHaveURL(/\/budget$/)
     await expect(page.getByText('Ready to Assign')).toBeVisible()
-    await expect(page.getByText('$0.00')).toBeVisible()
+    // Targets the hero figure by test id, not by matching "$0.00" text —
+    // the redesign's per-category "of $X.XX" allocation text can contain
+    // the same substring when a category has $0 allocated, which made this
+    // assertion a strict-mode violation (2 matches) depending on seeded
+    // data. The underlying ready_to_assign value/behavior is unchanged.
+    await expect(page.getByTestId('ready-to-assign')).toHaveText('$0.00')
   })
 
   test('wrong password shows an error and stays on the login page', async ({ page }) => {

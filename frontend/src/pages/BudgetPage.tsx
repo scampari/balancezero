@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { type Budget, getBudgetWithAutoRefresh } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { AppShell, PageLoading } from '../components/AppShell'
+
+function formatMoney(value: string): string {
+  return Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+}
 
 export function BudgetPage() {
   const { accessToken, setAccessToken, isAuthChecked } = useAuth()
@@ -39,23 +44,56 @@ export function BudgetPage() {
     }
   }, [accessToken, isAuthChecked, navigate, setAccessToken])
 
-  if (!budget) return <p>Loading…</p>
+  if (!budget) return <PageLoading />
+
+  const readyToAssign = Number(budget.ready_to_assign)
 
   return (
-    <div>
-      <h1>Budget</h1>
-      <nav>
-        <Link to="/transactions">Transactions</Link>
-      </nav>
-      <p>Ready to Assign</p>
-      <p>${Number(budget.ready_to_assign).toFixed(2)}</p>
-      <ul>
-        {budget.categories.map((category) => (
-          <li key={category.id}>
-            {category.name}: ${Number(category.allocated_this_month).toFixed(2)}
-          </li>
-        ))}
-      </ul>
-    </div>
+    <AppShell>
+      <div className="mb-8 rounded-xl border border-(--color-border) bg-(--color-surface) p-6">
+        <p className="text-xs font-medium text-(--color-text-muted)">Ready to Assign</p>
+        <p
+          data-testid="ready-to-assign"
+          className={`tabular-nums mt-1 text-4xl font-semibold tracking-tight ${
+            readyToAssign < 0 ? 'text-(--color-negative)' : 'text-(--color-accent)'
+          }`}
+        >
+          {formatMoney(budget.ready_to_assign)}
+        </p>
+      </div>
+
+      <h2 className="mb-3 text-sm font-medium text-(--color-text-muted)">Categories</h2>
+      <div className="overflow-hidden rounded-xl border border-(--color-border)">
+        {budget.categories.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-(--color-text-faint)">No categories yet.</p>
+        ) : (
+          <ul className="divide-y divide-(--color-border)">
+            {budget.categories.map((category) => {
+              const available = Number(category.available)
+              return (
+                <li
+                  key={category.id}
+                  className="flex items-center justify-between bg-(--color-surface) px-4 py-3 transition-colors hover:bg-(--color-surface-hover)"
+                >
+                  <span className="text-sm text-(--color-text)">{category.name}</span>
+                  <div className="text-right">
+                    <span
+                      className={`tabular-nums text-sm font-medium ${
+                        available < 0 ? 'text-(--color-negative)' : 'text-(--color-text)'
+                      }`}
+                    >
+                      {formatMoney(category.available)}
+                    </span>
+                    <span className="tabular-nums ml-2 text-xs text-(--color-text-faint)">
+                      of {formatMoney(category.allocated_this_month)}
+                    </span>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+    </AppShell>
   )
 }

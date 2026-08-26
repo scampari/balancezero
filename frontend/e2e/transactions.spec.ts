@@ -44,9 +44,12 @@ test.describe('transactions page', () => {
     // (a hard navigation would remount the app and lose the in-memory token)
     await page.getByRole('link', { name: 'Transactions' }).click()
 
-    // Assert — real data from the real API, not hardcoded
+    // Assert — real data from the real API, not hardcoded. Amount assertion
+    // updated for the UI redesign's real currency formatting (-$42.50, was
+    // the raw API string "-42.50") — a deliberate behavior change, not a
+    // contract break: the underlying value is unchanged, only its display.
     await expect(page.getByText('E2E Grocery Run')).toBeVisible()
-    await expect(page.getByText('-42.50')).toBeVisible()
+    await expect(page.getByText('-$42.50')).toBeVisible()
   })
 
   test('changing category persists', async ({ page }) => {
