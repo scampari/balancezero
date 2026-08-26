@@ -112,8 +112,17 @@ is set. Never includes `access_token` or `item_id`.
 - `tests/test_plaid_connect.py` § `"test_status_without_token_returns_401"` —
   covers § GET /status error case: no token.
 
-Not yet written — auto-test-writer produces these next, confirming each
-fails for the right reason (404, no routes yet) before committing.
+9 of 12 confirmed red (404, no routes yet) before commit — full suite run
+(65 pre-existing tests, all still passing; 22.69s). The other 3
+(`test_connect_with_valid_public_token_succeeds`,
+`test_reconnect_replaces_existing_connection`,
+`test_status_returns_true_after_connecting`) are `@requires_plaid_sandbox`-
+skipped, not red or green — this environment has no real
+`PLAID_CLIENT_ID`/`PLAID_SECRET` Sandbox credentials, and those three
+specifically need a real successful exchange in their Arrange step (a
+placeholder `public_token` string only works for the tests that never get
+far enough to validate it — auth/demo/missing-field checks all happen
+first). See PR for the blocking comment on what's needed to lift the skip.
 
 ## Notes
 - Created by auto-plan-grill from `changes/004-plaid-and-self-host/plan.md`
@@ -174,3 +183,9 @@ fails for the right reason (404, no routes yet) before committing.
   OAuth-institution open question resolved (no dependency on
   self-hosted-deploy.md). High confidence throughout — proceeding to
   auto-test-writer.
+- 004 (2026-08-26) — 12 tests written (`tests/test_plaid_connect.py`), 9
+  confirmed red, 3 skipped pending real Plaid Sandbox credentials in this
+  environment. `plaid-python` added to `requirements.txt`. Ready for
+  auto-build once credentials are available for the 3 skipped tests, or
+  buildable now against the 9 confirmed-red ones with the skipped 3
+  verified later.

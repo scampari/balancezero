@@ -81,23 +81,13 @@ change if wrong.
   just assumed. Confidence raised to high. See `spec/plaid-connect.md`'s
   Notes for the full resolution.
 
-### No data migration for existing local SimpleFIN connection
-- **Status:** assumption-accepted
-- **Confidence:** medium
-- **Slices affected:** the migration itself (part of `plaid-connect.md`'s
-  build)
-- **What I'm assuming:** It's fine to discard any existing
-  `simplefin_access_url_encrypted` value in the local dev database without
-  a preserving migration — `changes/002/plan.md` recorded that a real
-  SimpleFIN Setup Token was going to be entered directly into the running
-  app, so real connection state may currently exist locally.
-- **Rationale:** Local/personal-use data, not a live user base; no
-  meaningful way to migrate between two structurally different credential
-  types anyway; sync was never built, so no transaction history is at
-  stake either way — just a re-link via Plaid Link after this ships.
-- **If wrong, impact:** If the user actually wants that connection state
-  preserved or wants to be warned/prompted before it's dropped, the
-  migration needs an explicit acknowledgment step (or at minimum, a
-  reminder to re-link before deploying this).
-- **Correction:** _(filled by human if wrong)_
-- **Resolution:** _(filled once confirmed)_
+### ~~No data migration for existing local SimpleFIN connection~~ — RESOLVED, removed from open questions
+- **Status:** resolved (was assumption-accepted, medium confidence)
+- **Resolved by:** direct verification, 2026-08-26 — queried the local
+  `dev-db` directly (`docker compose up -d dev-db`, then a `SELECT` against
+  the `user` table). Only one user row exists: the seeded demo user
+  (`is_demo=true`), which correctly has no SimpleFIN connection. Sam's real
+  user account was never created locally, so the real Setup Token
+  `changes/002/plan.md` mentioned was apparently never entered into the
+  running app (or was tried against a since-reset database). There is
+  nothing for this migration to discard — confirmed, not assumed.

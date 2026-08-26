@@ -61,15 +61,45 @@ PVC, not ephemeral pod storage, is where data actually lives.
   tailnet (no Tailscale, or a different tailnet), Then** the request fails
   to resolve/connect — no fallback public path exists. This is the
   spec's core negative test.
-- **When `kubectl get secret -o yaml` is inspected without cluster admin
-  access, Then** raw secret values aren't recoverable — verifies
-  `--secrets-encryption` is actually in effect, not just documented as a
-  step that was supposedly taken.
+- **When the k3s datastore file on disk is inspected directly (e.g. its
+  default embedded SQLite file, bypassing the Kubernetes API entirely),
+  Then** Secret values aren't plaintext-recoverable — this is what
+  `--secrets-encryption` actually protects against. **Correction, made
+  while writing this contract's verification script**: the original
+  wording of this case (`kubectl get secret -o yaml` "without cluster
+  admin access") tested the wrong thing — the API server always decrypts
+  Secrets for any RBAC-authorized caller regardless of
+  `--secrets-encryption`; that flag protects the raw datastore file on
+  disk from someone bypassing the API entirely (e.g. host/disk access),
+  not `kubectl` access through it. Fixed here before it became a
+  regression test for a flag that was never actually being verified.
 
 ## Tests
-No test exists yet — auto-test-writer will produce these as a
-deploy-verification script (see Notes on why this likely isn't pytest),
-auto-build implements the k3s manifests/Helm values against it.
+- `scripts/verify-deploy.sh` § check 1 ("Pods Ready") — covers § Done-when:
+  pods `Ready`.
+- `scripts/verify-deploy.sh` § check 2 ("App reachable over the tailnet") —
+  covers § Integration test contract: health check reachable over the
+  tailnet.
+- `scripts/verify-deploy.sh` § check 3 ("NOT publicly resolvable") — covers
+  § Error case: unreachable off-tailnet (best-effort — checks for the
+  absence of a public DNS record, not a full reachability guarantee; see
+  script comments).
+- `scripts/verify-deploy.sh` § check 4 ("Postgres data survives a pod
+  restart") — covers § Integration test contract: data persistence.
+- `scripts/verify-deploy.sh` § check 5 ("Secrets protected on the raw
+  datastore file") — covers § Error case: secrets-at-rest, corrected
+  version (see Notes) — checks the raw k3s datastore file via `kubectl
+  debug node`, not `kubectl get secret`.
+
+Confirmed red: ran against no cluster (no `balancezero` namespace exists
+anywhere yet) — fails at check 1 with `"no pods found in namespace
+'balancezero' — nothing deployed yet"`, exit code 1. This is the
+infra-verification equivalent of a 404 on a not-yet-implemented route.
+Caught and fixed one real bug while confirming red: an empty pod list was
+initially passing check 1 by vacuous truth (`grep -v` on empty input
+produces empty output, which the original logic read as "no non-Ready
+pods found" rather than "no pods at all") — fixed to fail explicitly on an
+empty pod list before checking readiness.
 
 ## Notes
 - Created by auto-plan-grill from `changes/004-plaid-and-self-host/plan.md`
@@ -118,3 +148,8 @@ auto-build implements the k3s manifests/Helm values against it.
   medium confidence throughout (first infra spec in this project, no prior
   pattern to copy) — proceeding to auto-test-writer per the "most decisions
   can be assumed at medium confidence" guidance, not blocking.
+- 004 (2026-08-26) — `scripts/verify-deploy.sh` written, confirmed red
+  against no cluster. Corrected the secrets-at-rest error case's check
+  target (raw datastore file, not `kubectl get secret`) while writing the
+  script — see Notes. Ready for auto-build to stand up the cluster against
+  it.
