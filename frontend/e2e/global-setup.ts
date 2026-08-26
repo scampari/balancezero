@@ -23,7 +23,12 @@ export default function globalSetup() {
       ...process.env,
       SECRET_KEY: 'e2e-test-secret',
       DATABASE_URL: 'postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test',
-      SIMPLEFIN_ENCRYPTION_KEY: 'tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=',
+      PLAID_ENCRYPTION_KEY: 'tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=',
+      // Placeholders so app.py can boot (it requires these at import, no
+      // default by design) — e2e tests never touch the Plaid endpoints.
+      // Same placeholder values as conftest.py; keep in sync.
+      PLAID_CLIENT_ID: 'test-placeholder-client-id',
+      PLAID_SECRET: 'test-placeholder-secret',
     },
   })
 }

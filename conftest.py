@@ -6,7 +6,15 @@ os.environ.setdefault(
     "postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test",
 )
 # Fixed test-only Fernet key — never used for anything but the test database.
-os.environ.setdefault("SIMPLEFIN_ENCRYPTION_KEY", "tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=")
+os.environ.setdefault("PLAID_ENCRYPTION_KEY", "tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=")
+# app.py requires these to exist just to import (no default there, by
+# design — see plaid_api.py). Placeholder values let the app + most tests
+# run without a real Plaid account; tests/test_plaid_connect.py's
+# requires_plaid_sandbox skip condition checks for these exact placeholder
+# strings (not mere truthiness) to tell a placeholder apart from a real
+# credential — keep the two in sync if either changes.
+os.environ.setdefault("PLAID_CLIENT_ID", "test-placeholder-client-id")
+os.environ.setdefault("PLAID_SECRET", "test-placeholder-secret")
 
 import pytest
 from werkzeug.security import generate_password_hash

@@ -1,9 +1,18 @@
 ---
-status: planned
+status: superseded
 depends_on: [simplefin-connect.md]
+superseded_by: plaid-sync.md
 ---
 
-# SimpleFIN sync: pull accounts + transactions
+# SimpleFIN sync: pull accounts + transactions (superseded)
+
+**Superseded 2026-08-26 by `spec/plaid-sync.md`** — SimpleFIN replaced by
+Plaid, full replacement. This spec was only ever a stub (no contract, no
+implementation) when its own PR (#1) merged; `spec/plaid-sync.md`'s Notes
+record what changed in the sync design itself (cursor-based, not
+date-windowed; deletes on Plaid's explicit `removed` signal; no rate-limit
+tracking needed) rather than carrying this contract forward unchanged. Kept
+below for history; do not build new work against this contract.
 
 ## Does
 Lets a connected real user pull their current account balances and

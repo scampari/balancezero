@@ -3,5 +3,7 @@ __pycache__/
 *.pyc
 .env
 instance/
+# curl cookie jars from manual API testing — session tokens, never commit
+cookies*.txt
 *.db
 .DS_Store

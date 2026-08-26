@@ -6,6 +6,19 @@ for the full interrogation). Not yet implemented; re-verify details below
 against current Plaid docs before implementing, same discipline that caught
 the previous provider's doc drift.
 
+- **SIGN CONVENTION IS FLIPPED FROM SIMPLEFIN'S — verified against Plaid's
+  docs during `plaid-sync.md` test-writing, 2026-08-26.** Plaid: positive
+  `amount` = money **leaving** the account (debit/outflow); negative =
+  money entering (credit/inflow). SimpleFIN was the opposite (positive =
+  inflow), and this app's own `Transaction.amount` column follows
+  SimpleFIN's convention (positive = inflow) — unchanged, not being
+  renegotiated. **`plaid-sync.md`'s upsert must negate Plaid's `amount`
+  when writing to `Transaction.amount`, always.** Caught only because a
+  real Sandbox transaction was inspected directly rather than assumed;
+  `models.py`'s column comment briefly claimed the opposite (introduced
+  during `plaid-connect.md`'s build, carried over from the SimpleFIN-era
+  comment without re-verification) — fixed there too.
+
 - **Auth flow**: Plaid Link (Plaid's hosted JS/React widget) runs in the
   browser and talks to Plaid directly, returning a short-lived
   `public_token` to the frontend. The frontend sends that to our backend,
@@ -50,6 +63,24 @@ the previous provider's doc drift.
   Same Fernet-at-rest pattern as before; same security requirement basis
   (Plaid, like SimpleFIN, requires strong protection of the access
   credential).
+- **Sync cursor scope, verified during `plaid-sync.md` planning**: the
+  `cursor`/`next_cursor` in `/transactions/sync` is scoped to the Item by
+  default — one cursor covers every account under it. It only becomes
+  per-account if requests filter by `account_id` ("specifying an
+  `account_id` effectively creates a separate incremental update stream —
+  and therefore a separate cursor — for that account," per Plaid's docs).
+  This project never filters by `account_id`, so the cursor lives on
+  `User.plaid_sync_cursor`, not `Account`. An earlier planning pass
+  guessed `Account`-level without checking this — corrected here.
+- **No response-size defense needed for `/transactions/sync` either**,
+  same reasoning as `/link/token/create` and `/item/public_token/exchange`
+  (see "Storage" above and `spec/plaid-connect.md`'s Notes): every Plaid
+  SDK call goes to a fixed, environment-selected, trusted host, never a
+  client-supplied URL. The unbounded-response-body defense SimpleFIN
+  needed doesn't transfer — an earlier planning pass proposed carrying it
+  forward "just in case" without re-examining whether the same trust
+  reasoning already established for `plaid-connect.md` also covered this
+  call. It does.
 - **Field naming**: `plaid_account_id`, `plaid_transaction_id` replace the
   `simplefin_*` equivalents on `Account`/`Transaction`. Single-provider app
   — no provider-neutral abstraction, per the grill's terminology resolution.
@@ -67,8 +98,20 @@ the previous provider's doc drift.
 Webhooks require Plaid's servers to reach ours — on Tailscale that means
 Funnel, i.e. real public HTTPS ingress via Tailscale's relay, not a
 private-only tailnet. Decided against this (see grill) to keep the
-self-hosted deployment fully private. Consequence: sync is polling-only,
-same operational shape as the SimpleFIN sync design that was already
-planned (upsert semantics, no-delete-on-absence, rate/window tracking all
-carry over conceptually) — this is not a from-scratch redesign of the sync
-approach, just a different upstream API.
+self-hosted deployment fully private. Consequence: sync is polling-only —
+but see the correction below on which specific mechanics do and don't
+carry over from the original SimpleFIN sync design; less of it survived
+unchanged than first assumed here.
+
+**Correction (2026-08-26, during `plaid-sync.md` planning):** this
+section originally claimed "upsert semantics, no-delete-on-absence,
+rate/window tracking all carry over conceptually." Verified against real
+docs while writing that slice's contract — only the upsert-and-never-
+touch-`category_id` principle actually survives unchanged. The other two
+don't: `removed` is an explicit, authoritative deletion signal (delete on
+it, the opposite of "no-delete-on-absence," which was reasoned around
+SimpleFIN's *windowed* absence specifically); and rate/window tracking
+isn't needed at all, Plaid's real limits (50 req/min per Item) aren't in
+the same universe as SimpleFIN's 24/day cap. "Polling-only" is the one
+architectural property that's actually the same — the sync *mechanics*
+underneath are meaningfully different, not a drop-in port.

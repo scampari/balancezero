@@ -10,8 +10,14 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     is_demo = db.Column(db.Boolean, nullable=False, default=False)
-    # Fernet ciphertext (see lesson 0012) — null for the demo user, which has no real bank connection.
-    simplefin_access_url_encrypted = db.Column(db.LargeBinary, nullable=True)
+    # Fernet ciphertext — null for the demo user, which has no real bank connection.
+    # Plaid's access_token, not a full URL (unlike the SimpleFIN-era column this replaces).
+    plaid_access_token_encrypted = db.Column(db.LargeBinary, nullable=True)
+    # Plaid's Item identifier — not a secret, stored plaintext alongside the encrypted token.
+    plaid_item_id = db.Column(db.String(120), nullable=True)
+    # /transactions/sync cursor — Item-scoped (covers every account under it),
+    # not per-account; null means "never synced." See spec/plaid-sync.md's Notes.
+    plaid_sync_cursor = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     accounts = db.relationship("Account", backref="user", cascade="all, delete-orphan")
@@ -22,8 +28,8 @@ class User(db.Model):
 class Account(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    # Null for synthetic demo-user accounts, which have no corresponding SimpleFIN account.
-    simplefin_account_id = db.Column(db.String(120), nullable=True)
+    # Null for synthetic demo-user accounts, which have no corresponding Plaid account.
+    plaid_account_id = db.Column(db.String(120), nullable=True)
     name = db.Column(db.String(120), nullable=False)
     currency = db.Column(db.String(3), nullable=False, default="USD")
     balance = db.Column(db.Numeric(12, 2), nullable=False, default=0)
@@ -32,6 +38,8 @@ class Account(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     transactions = db.relationship("Transaction", backref="account", cascade="all, delete-orphan")
+
+    __table_args__ = (db.UniqueConstraint("user_id", "plaid_account_id", name="uq_account_user_plaid_id"),)
 
 
 class Category(db.Model):
@@ -52,17 +60,24 @@ class Transaction(db.Model):
     account_id = db.Column(db.Integer, db.ForeignKey("account.id"), nullable=False)
     category_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True)
     # Null for synthetic demo transactions. Unique per account so a repeated sync
-    # (lesson 0012's rate-limited, scheduled sync) can upsert instead of duplicating.
-    simplefin_transaction_id = db.Column(db.String(120), nullable=True)
+    # can upsert instead of duplicating.
+    plaid_transaction_id = db.Column(db.String(120), nullable=True)
     posted_at = db.Column(db.Date, nullable=False)
-    # Positive = inflow, negative = outflow — matches SimpleFIN's own sign convention.
+    # Positive = inflow, negative = outflow (this app's own convention, unchanged
+    # from the SimpleFIN era). CORRECTED — this comment previously claimed this
+    # "matches Plaid's own sign convention," carried over from the SimpleFIN-era
+    # comment without re-verifying: Plaid's is the OPPOSITE (positive = money
+    # LEAVING the account, negative = money entering — confirmed against Plaid's
+    # docs during plaid-sync.md's test-writing). plaid-sync.md's upsert MUST
+    # negate Plaid's amount when writing to this column, or every synced
+    # transaction's sign is silently backwards. See spec/plaid-sync.md's Notes.
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(255), nullable=False)
     pending = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
-        db.UniqueConstraint("account_id", "simplefin_transaction_id", name="uq_transaction_account_simplefin_id"),
+        db.UniqueConstraint("account_id", "plaid_transaction_id", name="uq_transaction_account_plaid_id"),
     )
 
 
