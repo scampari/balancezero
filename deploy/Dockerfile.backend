@@ -7,7 +7,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt gunicorn
 
-COPY app.py api_helpers.py auth_api.py budget_api.py models.py plaid_api.py transactions_api.py seed_demo.py ./
+# All root-level modules, not an enumerated list — an enumerated list goes
+# stale the moment a new module is added (found the hard way: this list
+# was missing accounts_api.py, which would have crashed the deployed
+# backend on import the next time this image got built).
+COPY *.py ./
 COPY migrations/ migrations/
 
 ENV FLASK_APP=app.py
