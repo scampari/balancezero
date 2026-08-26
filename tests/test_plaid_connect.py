@@ -31,7 +31,20 @@ from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCr
 # with the same rigor as the SDK call shapes themselves (see plan's research).
 SANDBOX_INSTITUTION_ID = "ins_109508"
 
-_HAS_PLAID_SANDBOX_CREDENTIALS = bool(os.environ.get("PLAID_CLIENT_ID")) and bool(os.environ.get("PLAID_SECRET"))
+# CORRECTION (made during auto-build, not test-planning/writing): app.py
+# requires PLAID_CLIENT_ID/PLAID_SECRET to exist just to import (no default,
+# by design), so conftest.py sets placeholder values for every test run —
+# mere truthiness (the original check here) can no longer tell a real
+# credential apart from the placeholder. Compares against the exact known
+# placeholder strings instead. The *intent* (skip these 3 tests without a
+# real Sandbox account) is unchanged — this fixes the mechanism, not the
+# contract.
+_PLACEHOLDER_PLAID_CLIENT_ID = "test-placeholder-client-id"
+_PLACEHOLDER_PLAID_SECRET = "test-placeholder-secret"
+_HAS_PLAID_SANDBOX_CREDENTIALS = (
+    os.environ.get("PLAID_CLIENT_ID") not in (None, _PLACEHOLDER_PLAID_CLIENT_ID)
+    and os.environ.get("PLAID_SECRET") not in (None, _PLACEHOLDER_PLAID_SECRET)
+)
 
 requires_plaid_sandbox = pytest.mark.skipif(
     not _HAS_PLAID_SANDBOX_CREDENTIALS,
@@ -65,7 +78,17 @@ def _create_sandbox_public_token():
 # ---------------------------------------------------------------------------
 
 
+@requires_plaid_sandbox
 def test_link_token_created_for_authenticated_user(client, test_user, auth_headers):
+    # CORRECTION (found during auto-build, running against a real
+    # implementation for the first time): originally written un-skipped,
+    # reasoning "this just calls our own not-yet-built route." That's true
+    # for confirm-red (a 404 needs no Plaid call), but once the route
+    # exists it calls Plaid's real /link/token/create internally — a 200
+    # here genuinely requires real Sandbox credentials, same as the other
+    # three @requires_plaid_sandbox tests. The demo-user and no-token error
+    # cases below correctly don't need this (they 403/401 before ever
+    # reaching Plaid).
     # Act
     response = client.post("/api/plaid/link-token", headers=auth_headers)
 

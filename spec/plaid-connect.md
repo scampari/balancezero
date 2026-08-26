@@ -1,5 +1,5 @@
 ---
-status: planned
+status: built
 depends_on: [auth.md]
 ---
 
@@ -112,17 +112,21 @@ is set. Never includes `access_token` or `item_id`.
 - `tests/test_plaid_connect.py` § `"test_status_without_token_returns_401"` —
   covers § GET /status error case: no token.
 
-9 of 12 confirmed red (404, no routes yet) before commit — full suite run
-(65 pre-existing tests, all still passing; 22.69s). The other 3
-(`test_connect_with_valid_public_token_succeeds`,
+9 of 12 confirmed red (404, no routes yet) before implementation — full
+suite run (65 pre-existing tests, all still passing; 22.69s).
+
+**Built.** After implementation: 58 passed, 4 skipped, 0 failed (full
+suite). One test needed correcting during build:
+`test_link_token_created_for_authenticated_user` was originally written
+un-skipped (reasoning "no Plaid call needed to hit our own route") but a
+`200` from the built route genuinely requires a real `/link/token/create`
+call to Plaid — moved to `@requires_plaid_sandbox`, alongside the 3
+already there (`test_connect_with_valid_public_token_succeeds`,
 `test_reconnect_replaces_existing_connection`,
-`test_status_returns_true_after_connecting`) are `@requires_plaid_sandbox`-
-skipped, not red or green — this environment has no real
-`PLAID_CLIENT_ID`/`PLAID_SECRET` Sandbox credentials, and those three
-specifically need a real successful exchange in their Arrange step (a
-placeholder `public_token` string only works for the tests that never get
-far enough to validate it — auth/demo/missing-field checks all happen
-first). See PR for the blocking comment on what's needed to lift the skip.
+`test_status_returns_true_after_connecting`). All 4 need real
+`PLAID_CLIENT_ID`/`PLAID_SECRET` Sandbox credentials, not present in this
+environment — see PR #3's blocking comment for what's needed to lift the
+skip and verify these for real.
 
 ## Notes
 - Created by auto-plan-grill from `changes/004-plaid-and-self-host/plan.md`
@@ -185,7 +189,12 @@ first). See PR for the blocking comment on what's needed to lift the skip.
   auto-test-writer.
 - 004 (2026-08-26) — 12 tests written (`tests/test_plaid_connect.py`), 9
   confirmed red, 3 skipped pending real Plaid Sandbox credentials in this
-  environment. `plaid-python` added to `requirements.txt`. Ready for
-  auto-build once credentials are available for the 3 skipped tests, or
-  buildable now against the 9 confirmed-red ones with the skipped 3
-  verified later.
+  environment. `plaid-python` added to `requirements.txt`.
+- 004 (2026-08-26) — built. `plaid_api.py` implements all three routes;
+  migration `69650ded897a` renames the SimpleFIN-era columns and adds
+  `plaid_item_id` + the `Account` unique constraint. `simplefin_api.py` and
+  its tests removed (superseded, dead code once the blueprint was
+  unregistered). 58 passed, 4 skipped, 0 failed (full suite) — a 4th test
+  needed moving to `@requires_plaid_sandbox` during build, see Notes above.
+  `app.py`, `conftest.py`, `dev.sh` updated for the new env vars
+  (`PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENCRYPTION_KEY`).

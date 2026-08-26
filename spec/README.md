@@ -13,7 +13,7 @@ YNAB-style zero-based budgeting app. See `context/mvp-scope.md` for full feature
 | `transactions-ui.md` | built | transactions, frontend-app |
 | `simplefin-connect.md` | superseded by `plaid-connect.md` | auth |
 | `simplefin-sync.md` | superseded by `plaid-sync.md` | simplefin-connect |
-| `plaid-connect.md` | planned | auth |
+| `plaid-connect.md` | built | auth |
 | `plaid-sync.md` | planned | plaid-connect |
 | `self-hosted-deploy.md` | planned | frontend-app, budget-api |
 

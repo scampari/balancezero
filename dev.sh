@@ -11,9 +11,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 export SECRET_KEY="${SECRET_KEY:-local-dev-secret-not-for-production}"
 export DATABASE_URL="${DATABASE_URL:-postgresql://balancezero_dev:balancezero_dev@localhost:55433/balancezero_dev}"
 # Fixed local-only key so re-running dev.sh doesn't invalidate previously
-# stored SimpleFIN connections. Not for production — generate a real one
-# there (Fernet.generate_key()) and manage it as a real secret.
-export SIMPLEFIN_ENCRYPTION_KEY="${SIMPLEFIN_ENCRYPTION_KEY:-Cf36XJcRZYQp9YWjLnryvcDl-SZ7D1b01e8wnS9QJAk=}"
+# stored Plaid connections. Not for production — generate a real one there
+# (Fernet.generate_key()) and manage it as a real secret.
+export PLAID_ENCRYPTION_KEY="${PLAID_ENCRYPTION_KEY:-Cf36XJcRZYQp9YWjLnryvcDl-SZ7D1b01e8wnS9QJAk=}"
+# No safe local default for these — they authenticate against Plaid's real
+# Sandbox API. Get your own from the Plaid dashboard (free) and export them
+# in your shell before running this script; connecting a bank in the running
+# app won't work without them (link-token creation will 502).
+export PLAID_CLIENT_ID="${PLAID_CLIENT_ID:?Set PLAID_CLIENT_ID from your Plaid dashboard}"
+export PLAID_SECRET="${PLAID_SECRET:?Set PLAID_SECRET from your Plaid dashboard}"
 export FLASK_APP=app.py
 export FLASK_DEBUG="${FLASK_DEBUG:-1}"
 
