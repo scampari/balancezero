@@ -16,7 +16,9 @@ test.beforeAll(() => {
       ...process.env,
       SECRET_KEY: 'e2e-test-secret',
       DATABASE_URL: 'postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test',
-      SIMPLEFIN_ENCRYPTION_KEY: 'tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=',
+      PLAID_ENCRYPTION_KEY: 'tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=',
+      PLAID_CLIENT_ID: 'test-placeholder-client-id',
+      PLAID_SECRET: 'test-placeholder-secret',
     },
   })
 })
