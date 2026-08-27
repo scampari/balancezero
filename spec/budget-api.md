@@ -29,10 +29,10 @@ Converts the existing server-rendered budget routes (`create_category`, `set_all
  "categories": [ <entry>, ... ],
  "archived_categories": [ <entry>, ... ]}
 ```
-where each `<entry>` is `{"id": ..., "name": "...", "parent_id": ... | null, "position": <int>, "archived": <bool>, "allocated_this_month": "...", "spent_this_month": "...", "available": "...", "target": null | {"target_type": "monthly"|"yearly"|"custom", "target_amount": "...", "target_date": "..." | null, "monthly_target_amount": "...", "months_remaining": <int>, "funded": "...", "needed_this_month": "...", "progress": "..."}}`.
+where each `<entry>` is `{"id": ..., "name": "...", "parent_id": ... | null, "position": <int>, "archived": <bool>, "is_group": <bool>, "allocated_this_month": "...", "spent_this_month": "...", "available": "...", "target": null | {"target_type": "monthly"|"yearly"|"custom", "target_amount": "...", "target_date": "..." | null, "monthly_target_amount": "...", "months_remaining": <int>, "funded": "...", "needed_this_month": "...", "progress": "..."}}`.
 
 - `categories` holds only non-archived categories, ordered by `(position, id)`; `archived_categories` holds only archived ones, ordered by name. `archived` is `true` on every entry in the second list, `false` in the first.
-- `available`/`allocated_this_month`/`spent_this_month`/`target` are computed identically regardless of hierarchy — a subcategory's numbers work exactly like any other category's, and parent/child are independent line items (no roll-up).
+- **Category groups (changes/014 — reverses the earlier "no roll-up"):** a top-level category with at least one non-archived child is a **group**. Its entry has `"is_group": true` and its `allocated_this_month` / `spent_this_month` / `available` are the **sum of its non-archived children's** values plus any of the parent's own legacy amounts (so money budgeted before the split doesn't vanish). `target` is `null` for a group. A group cannot be allocated to (`POST /api/categories/<id>/allocations` → `400`) or have transactions assigned to it (`PATCH` / `POST /api/transactions` → `400`). A leaf category (has a parent, or a top-level with no children) is unchanged: `"is_group": false`, its own numbers, editable. `totals` still sums each category's *own* values, so a group and its children are never double-counted.
 - `allocated_this_month` = the category's `BudgetAllocation.allocated_amount` for the requested `month` (or `"0"`). `spent_this_month` = signed `SUM(Transaction.amount)` for the category within the requested month (outflows negative). `available` = the cumulative rolled-over envelope balance: `SUM(all-month allocations) + SUM(all-time signed transactions)` — **not** month-scoped.
 - `totals` = the sum of `allocated_this_month` / `spent_this_month` / `available` over `categories` only (archived excluded).
 - `target` is `null` when the category has no active target (`superseded_at IS NULL` row in `CategoryTarget`). `monthly_target_amount` is unchanged from the 005 contract — `target_amount` as-is for `monthly`, else `target_amount ÷ months remaining` — a progress-blind baseline. The 006 progress fields: `months_remaining` is `1` for `monthly`, else whole calendar months from the current month through the horizon inclusive (`target_date`'s month for `custom`, December for `yearly`). `funded` is what's already set aside — `allocated_this_month` for `monthly`, else `max(0, available)`. `needed_this_month` is what to assign now to stay on pace — `max(0, target_amount − funded)` for `monthly`, else `max(0, (target_amount − funded) ÷ months_remaining)`, rounded to cents. `progress` is `min(1, funded ÷ target_amount)` (4 dp).
@@ -84,10 +84,10 @@ where each `<entry>` is `{"id": ..., "name": "...", "parent_id": ... | null, "po
 **Input:** JSON `{"name": "...", "parent_id": <int>}` — `parent_id` optional.
 **Expected output:** `201`, JSON `{"id": ..., "name": "...", "parent_id": ... | null}`.
 **Side effects:** A new `Category` row owned by the authenticated user.
-A category with a `parent_id` is a subcategory — purely organizational,
-still independently allocatable and assignable to transactions exactly
-like a top-level category (see `context/mvp-scope.md` / Notes below —
-no budget-math change based on hierarchy).
+A category with a `parent_id` is a subcategory. Adding the first child to a
+top-level category turns that parent into a **group** (see the `GET
+/api/budget` contract's `is_group` bullet): the group is no longer directly
+allocatable or transaction-assignable — its columns total its children.
 
 #### Error cases
 - **When no/invalid access token, Then** `401`.
@@ -218,3 +218,17 @@ No delete endpoint exists — categories are archived, never removed, so their h
 - 005 (2026-08-26) — `ready_to_assign`/`is_income` + budget-view `target` tests locked: 4 tests in `tests/test_budget_api.py`, all confirmed red. Depends on `spec/transactions.md`'s new `Transaction.is_income` column + migration `a1b2c3d4e5f6` (added with that spec's test commit). No `get_budget` logic changed — `ready_to_assign` still uses the old uncategorized-inflow formula and the per-category shape still omits `target`; the build closes both. Status stays `in-progress`.
 - 005 (2026-08-26) — built. `get_budget`: `ready_to_assign` now sums `Transaction.amount` where `is_income` is true (joined through the user's accounts) minus total allocated; each per-category entry gains a `target` field (`null`, or the active `CategoryTarget` trimmed to `target_type`/`target_amount`/`target_date`/`monthly_target_amount`). All 4 tests green; 103/103 full suite (9 skipped — Plaid sandbox). Both halves of slice 005 built — spec status → built.
 - 006 (2026-08-27) — added § `PATCH /api/categories/<id>` (rename / reparent / archive / reorder — no delete, categories are archived to keep transaction+allocation history); `GET /api/budget` now splits `categories` (active, ordered by `(position, id)`) from `archived_categories`, adds per-category `spent_this_month` / `position` / `archived`, a top-level `totals` object, and expands the `target` embed with `months_remaining` / `funded` / `needed_this_month` / `progress`. New `Category.archived` column + migration `b2c3d4e5f6a7`; `_month_bounds` moved from `transactions_api.py` to `api_helpers.py`. `changes/006-target-trackers-and-category-management/plan.md`. Built: `budget_api.py` gains `update_category` + `_pack_siblings` + `_target_budget_view`; 25 new tests in `tests/test_budget_api.py`; 128/128 full suite (9 skipped — Plaid sandbox). `monthly_target_amount` unchanged so the 005 target tests stay green. Status stays `built`.
+- 014 (2026-08-27) — category groups. A top-level category with ≥1
+  non-archived child becomes a group: `GET /api/budget` entry gets
+  `"is_group": true` and sums its children's
+  `allocated_this_month`/`spent_this_month`/`available` (+ the parent's own
+  legacy amounts); `target` is null. `POST
+  /api/categories/<id>/allocations` on a group → `400`. `totals` still
+  sums each category's own values (no double-count). Reverses the "no
+  roll-up" design in the line above. Also `spec/transactions.md`: assigning
+  a transaction to a group → `400`. `budget_api.py` + `api_helpers.py`
+  (`category_has_children`) + `transactions_api.py`; frontend
+  `BudgetPage.tsx` (collapsible group row, no assign input, collapse state
+  in `localStorage`) + `TransactionsPage.tsx` (groups out of the pickers).
+  `tests/test_budget_api.py` +8, `tests/test_transactions.py` +2, e2e +1.
+  Full suite 208 passed / 6 skipped.

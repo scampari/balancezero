@@ -328,6 +328,11 @@ def set_allocation(category_id):
     if error:
         return error
 
+    if Category.query.filter_by(parent_id=category.id, archived=False).first() is not None:
+        return jsonify(
+            {"error": "this is a group category — assign a budget to its subcategories instead"}
+        ), 400
+
     data = request.get_json(silent=True) or {}
     if "month" not in data or "amount" not in data:
         return jsonify({"error": "month and amount are required"}), 400
@@ -380,9 +385,18 @@ def get_budget():
     categories = (
         Category.query.filter_by(user_id=user_id).order_by(Category.position, Category.id).all()
     )
-    active = []
-    archived = []
-    totals = {"budgeted": Decimal("0"), "spent": Decimal("0"), "available": Decimal("0")}
+
+    # A top-level category with at least one non-archived child is a *group*:
+    # not spendable/allocatable itself, its columns are the sum of its
+    # children (plus any of its own legacy allocation/spend, so nothing that
+    # was budgeted before the split silently vanishes). See spec/budget-api.md.
+    group_parent_ids = {c.parent_id for c in categories if c.parent_id is not None and not c.archived}
+    child_ids_by_parent = {}
+    for c in categories:
+        if c.parent_id is not None and not c.archived:
+            child_ids_by_parent.setdefault(c.parent_id, []).append(c.id)
+
+    own = {}
     for cat in categories:
         allocated_this_month = db.session.query(BudgetAllocation.allocated_amount).filter_by(
             category_id=cat.id, month=month
@@ -399,14 +413,34 @@ def get_budget():
             Transaction.posted_at >= start,
             Transaction.posted_at < end,
         ).scalar() or Decimal("0")
-        available = allocated_total + spent_total
+        own[cat.id] = {
+            "allocated_this_month": allocated_this_month,
+            "spent_this_month": spent_this_month,
+            "available": allocated_total + spent_total,
+        }
 
-        active_target = CategoryTarget.query.filter_by(category_id=cat.id, superseded_at=None).first()
-        target = (
-            _target_budget_view(active_target, allocated_this_month, available)
-            if active_target is not None
-            else None
-        )
+    active = []
+    archived = []
+    totals = {"budgeted": Decimal("0"), "spent": Decimal("0"), "available": Decimal("0")}
+    for cat in categories:
+        o = own[cat.id]
+        is_group = cat.parent_id is None and cat.id in group_parent_ids
+
+        if is_group:
+            child_ids = child_ids_by_parent.get(cat.id, [])
+            disp = {
+                key: o[key] + sum(own[cid][key] for cid in child_ids)
+                for key in ("allocated_this_month", "spent_this_month", "available")
+            }
+            target = None  # a group can't be allocated to, so a target is meaningless
+        else:
+            disp = o
+            active_target = CategoryTarget.query.filter_by(category_id=cat.id, superseded_at=None).first()
+            target = (
+                _target_budget_view(active_target, o["allocated_this_month"], o["available"])
+                if active_target is not None
+                else None
+            )
 
         entry = {
             "id": cat.id,
@@ -414,18 +448,21 @@ def get_budget():
             "parent_id": cat.parent_id,
             "position": cat.position,
             "archived": cat.archived,
-            "allocated_this_month": str(allocated_this_month),
-            "spent_this_month": str(spent_this_month),
-            "available": str(available),
+            "is_group": is_group,
+            "allocated_this_month": str(disp["allocated_this_month"]),
+            "spent_this_month": str(disp["spent_this_month"]),
+            "available": str(disp["available"]),
             "target": target,
         }
         if cat.archived:
             archived.append(entry)
         else:
             active.append(entry)
-            totals["budgeted"] += allocated_this_month
-            totals["spent"] += spent_this_month
-            totals["available"] += available
+            # Totals sum each category's OWN values — a group and its children
+            # aren't double-counted.
+            totals["budgeted"] += o["allocated_this_month"]
+            totals["spent"] += o["spent_this_month"]
+            totals["available"] += o["available"]
 
     archived.sort(key=lambda e: e["name"].lower())
 

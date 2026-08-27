@@ -93,4 +93,26 @@ test.describe('budget page — management', () => {
     const after = await topLevelNames(page)
     expect(after[0]).toBe(before[1])
   })
+
+  test('a top-level category with children is a collapsible group that totals them', async ({ page }) => {
+    await login(page)
+    const food = row(page, 'Food')
+
+    // No editable assign field on the group; its children's amounts are summed.
+    await expect(food.getByLabel('Assign amount for Food')).toHaveCount(0)
+    await expect(food).toContainText('$400.00') // budgeted = child Groceries' 400
+    await expect(food).toContainText('$344.75') // available = 400 - 55.25 spent
+
+    // Collapsing hides the children…
+    await expect(row(page, 'Groceries')).toBeVisible()
+    await food.getByRole('button', { name: 'Collapse Food' }).click()
+    await expect(row(page, 'Groceries')).toHaveCount(0)
+
+    // …and it sticks across navigation (localStorage).
+    await page.getByRole('link', { name: 'Transactions' }).click()
+    await page.getByRole('link', { name: 'Budget' }).click()
+    await expect(row(page, 'Groceries')).toHaveCount(0)
+    await row(page, 'Food').getByRole('button', { name: 'Expand Food' }).click()
+    await expect(row(page, 'Groceries')).toBeVisible()
+  })
 })

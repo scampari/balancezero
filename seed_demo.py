@@ -42,7 +42,7 @@ with app.app_context():
 
     db.session.add_all(
         [
-            Transaction(account_id=checking.id, posted_at=this_month, amount=Decimal("1500.00"), description="Paycheck"),
+            Transaction(account_id=checking.id, posted_at=this_month, amount=Decimal("1500.00"), description="Paycheck", is_income=True),
             Transaction(account_id=checking.id, category_id=groceries.id, posted_at=this_month.replace(day=3), amount=Decimal("-62.14"), description="Grocery store"),
             Transaction(account_id=checking.id, category_id=rent.id, posted_at=this_month, amount=Decimal("-1000.00"), description="Rent"),
         ]

@@ -76,6 +76,10 @@ export interface BudgetCategory {
   parent_id: number | null
   position: number
   archived: boolean
+  // A top-level category with at least one active child. Its columns are the
+  // sum of its children (+ any own legacy amounts); it can't be allocated to
+  // or have transactions assigned to it.
+  is_group: boolean
   allocated_this_month: string
   spent_this_month: string
   available: string
@@ -180,6 +184,29 @@ export async function markTransactionIncome(
     { method: 'PATCH', body: JSON.stringify({ is_income: true, category_id: null }) },
     accessToken,
   )
+  await throwIfError(res)
+  return res.json()
+}
+
+export interface NewTransaction {
+  account_id: number
+  posted_at: string // YYYY-MM-DD
+  amount: string
+  description: string
+  category_id?: number | null
+}
+
+export async function createTransaction(
+  accessToken: string,
+  input: NewTransaction,
+): Promise<TransactionEntry> {
+  const res = await request('/transactions', { method: 'POST', body: JSON.stringify(input) }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
+export async function deleteTransaction(accessToken: string, transactionId: number): Promise<{ status: string }> {
+  const res = await request(`/transactions/${transactionId}`, { method: 'DELETE' }, accessToken)
   await throwIfError(res)
   return res.json()
 }
@@ -425,6 +452,22 @@ export function patchTransactionCategoryWithAutoRefresh(
     accessToken,
     onTokenRefreshed,
   )
+}
+
+export function createTransactionWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  input: NewTransaction,
+): Promise<TransactionEntry> {
+  return withAutoRefresh((token) => createTransaction(token, input), accessToken, onTokenRefreshed)
+}
+
+export function deleteTransactionWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  transactionId: number,
+): Promise<{ status: string }> {
+  return withAutoRefresh((token) => deleteTransaction(token, transactionId), accessToken, onTokenRefreshed)
 }
 
 export function markTransactionIncomeWithAutoRefresh(

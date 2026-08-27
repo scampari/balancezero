@@ -77,4 +77,74 @@ test.describe('transactions page', () => {
     const revisitedSelect = page.getByRole('row', { name: /E2E Grocery Run/ }).getByRole('combobox')
     expect(await selectedOptionText(revisitedSelect)).toBe('Groceries')
   })
+
+  test('a transaction can go To Be Budgeted and back to Uncategorized', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Transactions' }).click()
+    const select = page.getByRole('row', { name: /E2E Grocery Run/ }).getByRole('combobox')
+
+    await select.selectOption({ label: 'To Be Budgeted' })
+    await expect(async () => {
+      expect(await selectedOptionText(select)).toBe('To Be Budgeted')
+    }).toPass()
+
+    // The bug: this used to be a no-op.
+    await select.selectOption({ label: 'Uncategorized' })
+    await expect(async () => {
+      expect(await selectedOptionText(select)).toBe('Uncategorized')
+    }).toPass()
+
+    await page.getByRole('link', { name: 'Budget' }).click()
+    await page.getByRole('link', { name: 'Transactions' }).click()
+    const revisited = page.getByRole('row', { name: /E2E Grocery Run/ }).getByRole('combobox')
+    expect(await selectedOptionText(revisited)).toBe('Uncategorized')
+  })
+
+  test('a transaction can be added manually and deleted', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Transactions' }).click()
+
+    await page.getByRole('button', { name: 'Add transaction' }).click()
+    await page.getByLabel('Amount').fill('-13.37')
+    await page.getByLabel('Description').fill('Manual Coffee')
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+
+    const row = page.getByRole('row', { name: /Manual Coffee/ })
+    await expect(row).toBeVisible()
+    await expect(row.getByText('-$13.37')).toBeVisible()
+
+    // Delete it
+    await row.getByRole('button', { name: 'Delete Manual Coffee' }).click()
+    await expect(page.getByText('Manual Coffee')).toHaveCount(0)
+
+    // Still gone after a round-trip
+    await page.getByRole('link', { name: 'Budget' }).click()
+    await page.getByRole('link', { name: 'Transactions' }).click()
+    await expect(page.getByText('Manual Coffee')).toHaveCount(0)
+  })
+
+  test('a new transaction is auto-categorized from a prior same-merchant choice', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Transactions' }).click()
+
+    // First one: category it explicitly.
+    await page.getByRole('button', { name: 'Add transaction' }).click()
+    await page.getByLabel('Amount').fill('-6.00')
+    await page.getByLabel('Description').fill('AUTOCAT DELI')
+    await page.getByLabel('Category').selectOption({ label: 'Groceries' })
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    await expect(page.getByRole('row', { name: /AUTOCAT DELI/ })).toBeVisible()
+
+    // Second one at the same merchant, no category picked.
+    await page.getByRole('button', { name: 'Add transaction' }).click()
+    await page.getByLabel('Amount').fill('-7.25')
+    await page.getByLabel('Description').fill('AUTOCAT DELI')
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+
+    // Both rows now show Groceries — the second inherited the first's choice.
+    const rows = page.getByRole('row', { name: /AUTOCAT DELI/ })
+    await expect(rows).toHaveCount(2)
+    expect(await selectedOptionText(rows.nth(0).getByRole('combobox'))).toBe('Groceries')
+    expect(await selectedOptionText(rows.nth(1).getByRole('combobox'))).toBe('Groceries')
+  })
 })

@@ -12,6 +12,7 @@ positive = inflow — the upsert must negate on every write.
 
 import os
 import time
+from decimal import Decimal
 
 import plaid
 import pytest
@@ -63,7 +64,7 @@ def _connect_with_dynamic_test_data(client, auth_headers):
     assert resp.status_code == 200, "test setup failed: real /connect call did not succeed"
 
 
-def _seed_item(user, plaid_item_id="seed-item", cursor=None, name="Seed Bank"):
+def _seed_item(user, plaid_item_id="seed-item", cursor=None, name="Seed Bank", import_cutoff=None):
     """A PlaidItem with a real-Fernet-encrypted fake token — for offline
     tests that mock transactions_sync."""
     fernet = Fernet(os.environ["PLAID_ENCRYPTION_KEY"])
@@ -73,6 +74,7 @@ def _seed_item(user, plaid_item_id="seed-item", cursor=None, name="Seed Bank"):
         access_token_encrypted=fernet.encrypt(b"access-sandbox-fake"),
         sync_cursor=cursor,
         institution_name=name,
+        import_cutoff=import_cutoff,
     )
     db.session.add(item)
     db.session.commit()
@@ -337,3 +339,211 @@ def test_sync_is_incremental_on_second_call(client, test_user, auth_headers):
     body = second.get_json()
     assert body["totals"]["transactions_added"] == 0
     assert body["totals"]["transactions_modified"] == 0
+
+
+# ---------------------------------------------------------------------------
+# import cutoff — a fresh connection skips the historical backfill (changes/011)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_skips_added_transactions_before_the_import_cutoff(client, test_user, auth_headers, monkeypatch):
+    from datetime import date, timedelta
+
+    cutoff = date.today()
+    item = _seed_item(test_user, "item-cutoff", import_cutoff=cutoff)
+    account = Account(user_id=test_user.id, name="Checking", plaid_account_id="acc-1", plaid_item_id=item.id)
+    db.session.add(account)
+    db.session.commit()
+
+    old = (cutoff - timedelta(days=30)).isoformat()
+    new = cutoff.isoformat()
+
+    class _MixedAges:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[
+                    {"transaction_id": "old-1", "account_id": "acc-1", "amount": 5, "date": old, "name": "OLD", "pending": False},
+                    {"transaction_id": "new-1", "account_id": "acc-1", "amount": 7, "date": new, "name": "NEW", "pending": False},
+                ]
+            )
+
+    _patch_client(monkeypatch, _MixedAges())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.get_json()["totals"]["transactions_added"] == 1  # only the on-cutoff one
+    descriptions = {t.description for t in Transaction.query.filter_by(account_id=account.id).all()}
+    assert descriptions == {"NEW"}
+
+
+def test_sync_with_null_cutoff_imports_all_history(client, test_user, auth_headers, monkeypatch):
+    from datetime import date, timedelta
+
+    item = _seed_item(test_user, "item-nocutoff", import_cutoff=None)
+    account = Account(user_id=test_user.id, name="Checking", plaid_account_id="acc-1", plaid_item_id=item.id)
+    db.session.add(account)
+    db.session.commit()
+
+    long_ago = (date.today() - timedelta(days=200)).isoformat()
+
+    class _OldOnly:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[{"transaction_id": "old-1", "account_id": "acc-1", "amount": 5, "date": long_ago, "name": "OLD", "pending": False}]
+            )
+
+    _patch_client(monkeypatch, _OldOnly())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+    assert response.get_json()["totals"]["transactions_added"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Starting Balance on a brand-new account (changes/012)
+# ---------------------------------------------------------------------------
+
+
+def _mock_account(account_id, current, name="Checking", available=None, iso="USD"):
+    return {
+        "account_id": account_id,
+        "name": name,
+        "balances": {"current": current, "available": available, "iso_currency_code": iso},
+    }
+
+
+def _sync_response_with_accounts(accounts, added=None):
+    body = _mock_sync_response(added=added)
+    body["accounts"] = accounts
+    return body
+
+
+def test_sync_adds_starting_balance_for_a_new_account(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-sb")
+
+    class _NewAccount:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts([_mock_account("acc-sb", 1500.00)])
+
+    _patch_client(monkeypatch, _NewAccount())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+    assert response.status_code == 200
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-sb").first()
+    starting = Transaction.query.filter_by(account_id=account.id, description="Starting Balance").all()
+    assert len(starting) == 1
+    assert starting[0].amount == account.balance == Decimal("1500.00")
+    assert starting[0].is_income is True
+    assert starting[0].plaid_transaction_id is None
+
+
+def test_sync_does_not_add_a_second_starting_balance_on_re_sync(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-sb2")
+
+    class _SameAccountTwice:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts([_mock_account("acc-sb", 1500.00)])
+
+    _patch_client(monkeypatch, _SameAccountTwice())
+
+    client.post("/api/plaid/sync", headers=auth_headers)
+    client.post("/api/plaid/sync", headers=auth_headers)
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-sb").first()
+    assert Transaction.query.filter_by(account_id=account.id, description="Starting Balance").count() == 1
+
+
+def test_sync_skips_starting_balance_for_a_zero_balance_account(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-sb3")
+
+    class _ZeroBalance:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts([_mock_account("acc-zero", 0)])
+
+    _patch_client(monkeypatch, _ZeroBalance())
+
+    client.post("/api/plaid/sync", headers=auth_headers)
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-zero").first()
+    assert Transaction.query.filter_by(account_id=account.id, description="Starting Balance").count() == 0
+
+
+# ---------------------------------------------------------------------------
+# auto-categorization by prior choice (changes/013)
+# ---------------------------------------------------------------------------
+
+
+def _seed_account_and_category(user, category_name="Groceries"):
+    from models import Category
+
+    account = Account(user_id=user.id, name="Checking", plaid_account_id="acc-ac")
+    category = Category(user_id=user.id, name=category_name)
+    db.session.add_all([account, category])
+    db.session.commit()
+    return account, category
+
+
+def test_sync_auto_categorizes_new_transaction_from_prior_same_merchant(client, test_user, auth_headers, monkeypatch):
+    account, category = _seed_account_and_category(test_user)
+    item = _seed_item(test_user, "item-ac")
+    account.plaid_item_id = item.id
+    # A prior transaction at "WHOLE FOODS" the user categorized.
+    db.session.add(Transaction(
+        account_id=account.id, plaid_transaction_id="prior", posted_at="2026-07-01",
+        amount=-30, description="WHOLE FOODS", category_id=category.id,
+    ))
+    db.session.commit()
+
+    class _NewSameMerchant:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(added=[
+                {"transaction_id": "new-1", "account_id": "acc-ac", "amount": 12.0,
+                 "date": "2026-08-15", "name": "WHOLE FOODS", "pending": False},
+                {"transaction_id": "new-2", "account_id": "acc-ac", "amount": 8.0,
+                 "date": "2026-08-16", "name": "NEVER SEEN BEFORE", "pending": False},
+            ])
+
+    _patch_client(monkeypatch, _NewSameMerchant())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+    assert response.status_code == 200
+
+    matched = Transaction.query.filter_by(account_id=account.id, plaid_transaction_id="new-1").first()
+    unmatched = Transaction.query.filter_by(account_id=account.id, plaid_transaction_id="new-2").first()
+    assert matched.category_id == category.id  # auto-filled
+    assert unmatched.category_id is None  # no prior match, left alone
+
+
+def test_sync_does_not_recategorize_a_modified_transaction(client, test_user, auth_headers, monkeypatch):
+    account, groceries = _seed_account_and_category(test_user, "Groceries")
+    from models import Category
+    dining = Category(user_id=test_user.id, name="Dining")
+    db.session.add(dining)
+    item = _seed_item(test_user, "item-ac2")
+    account.plaid_item_id = item.id
+    # An existing synced transaction the user filed under Dining.
+    db.session.add(Transaction(
+        account_id=account.id, plaid_transaction_id="existing", posted_at="2026-08-01",
+        amount=-20, description="CHIPOTLE", category_id=dining.id,
+    ))
+    # A prior CHIPOTLE the user filed under Groceries (older).
+    db.session.add(Transaction(
+        account_id=account.id, plaid_transaction_id="older", posted_at="2026-07-01",
+        amount=-19, description="CHIPOTLE", category_id=groceries.id,
+    ))
+    db.session.commit()
+
+    class _ModifyExisting:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(modified=[
+                {"transaction_id": "existing", "account_id": "acc-ac", "amount": 21.0,
+                 "date": "2026-08-01", "name": "CHIPOTLE", "pending": False},
+            ])
+
+    _patch_client(monkeypatch, _ModifyExisting())
+
+    client.post("/api/plaid/sync", headers=auth_headers)
+
+    kept = Transaction.query.filter_by(account_id=account.id, plaid_transaction_id="existing").first()
+    assert kept.category_id == dining.id  # user's choice untouched by the modify

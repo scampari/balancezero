@@ -72,6 +72,11 @@ class PlaidItem(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     # Set at the end of each successful per-Item sync; feeds GET /status.
     last_synced_at = db.Column(db.DateTime, nullable=True)
+    # Transactions dated before this are skipped on sync — a fresh connection
+    # only imports transactions that post on/after the connect date, not the
+    # ~90 days of history Plaid returns. Null = import everything (backfilled
+    # rows from the pre-changes/008 single-institution era). See changes/011.
+    import_cutoff = db.Column(db.Date, nullable=True)
 
     __table_args__ = (
         db.UniqueConstraint("user_id", "plaid_item_id", name="uq_plaid_item_user_item"),
