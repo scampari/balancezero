@@ -275,3 +275,7 @@ credentials set — it's not dead code, just not currently exercised.
   new `DELETE /api/plaid/items/<id>`. See the rewrite note at the top of
   the contract and `changes/008-multi-institution-plaid/plan.md`. Migration
   `035d62499d87` (backfill verified). Backend suite 162 passed / 5 skipped.
+- 011 (2026-08-27) — `PlaidItem.import_cutoff` (Date, nullable). `/connect`
+  sets it to `date.today()` on a **new** item (not on re-link — the cutoff
+  stays put). Backfilled rows and everything pre-011 have `NULL` = import
+  all history. Migration `24d3aed8ab6c`.

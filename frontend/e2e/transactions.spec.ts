@@ -77,4 +77,49 @@ test.describe('transactions page', () => {
     const revisitedSelect = page.getByRole('row', { name: /E2E Grocery Run/ }).getByRole('combobox')
     expect(await selectedOptionText(revisitedSelect)).toBe('Groceries')
   })
+
+  test('a transaction can go To Be Budgeted and back to Uncategorized', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Transactions' }).click()
+    const select = page.getByRole('row', { name: /E2E Grocery Run/ }).getByRole('combobox')
+
+    await select.selectOption({ label: 'To Be Budgeted' })
+    await expect(async () => {
+      expect(await selectedOptionText(select)).toBe('To Be Budgeted')
+    }).toPass()
+
+    // The bug: this used to be a no-op.
+    await select.selectOption({ label: 'Uncategorized' })
+    await expect(async () => {
+      expect(await selectedOptionText(select)).toBe('Uncategorized')
+    }).toPass()
+
+    await page.getByRole('link', { name: 'Budget' }).click()
+    await page.getByRole('link', { name: 'Transactions' }).click()
+    const revisited = page.getByRole('row', { name: /E2E Grocery Run/ }).getByRole('combobox')
+    expect(await selectedOptionText(revisited)).toBe('Uncategorized')
+  })
+
+  test('a transaction can be added manually and deleted', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Transactions' }).click()
+
+    await page.getByRole('button', { name: 'Add transaction' }).click()
+    await page.getByLabel('Amount').fill('-13.37')
+    await page.getByLabel('Description').fill('Manual Coffee')
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+
+    const row = page.getByRole('row', { name: /Manual Coffee/ })
+    await expect(row).toBeVisible()
+    await expect(row.getByText('-$13.37')).toBeVisible()
+
+    // Delete it
+    await row.getByRole('button', { name: 'Delete Manual Coffee' }).click()
+    await expect(page.getByText('Manual Coffee')).toHaveCount(0)
+
+    // Still gone after a round-trip
+    await page.getByRole('link', { name: 'Budget' }).click()
+    await page.getByRole('link', { name: 'Transactions' }).click()
+    await expect(page.getByText('Manual Coffee')).toHaveCount(0)
+  })
 })

@@ -184,6 +184,29 @@ export async function markTransactionIncome(
   return res.json()
 }
 
+export interface NewTransaction {
+  account_id: number
+  posted_at: string // YYYY-MM-DD
+  amount: string
+  description: string
+  category_id?: number | null
+}
+
+export async function createTransaction(
+  accessToken: string,
+  input: NewTransaction,
+): Promise<TransactionEntry> {
+  const res = await request('/transactions', { method: 'POST', body: JSON.stringify(input) }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
+export async function deleteTransaction(accessToken: string, transactionId: number): Promise<{ status: string }> {
+  const res = await request(`/transactions/${transactionId}`, { method: 'DELETE' }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
 export async function createCategory(
   accessToken: string,
   name: string,
@@ -425,6 +448,22 @@ export function patchTransactionCategoryWithAutoRefresh(
     accessToken,
     onTokenRefreshed,
   )
+}
+
+export function createTransactionWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  input: NewTransaction,
+): Promise<TransactionEntry> {
+  return withAutoRefresh((token) => createTransaction(token, input), accessToken, onTokenRefreshed)
+}
+
+export function deleteTransactionWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  transactionId: number,
+): Promise<{ status: string }> {
+  return withAutoRefresh((token) => deleteTransaction(token, transactionId), accessToken, onTokenRefreshed)
 }
 
 export function markTransactionIncomeWithAutoRefresh(

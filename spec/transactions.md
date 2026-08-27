@@ -34,7 +34,7 @@ Lets a user see their transactions and assign them to a budget category (or unca
 **Action:** `PATCH /api/transactions/<transaction_id>`, `Authorization: Bearer <access token>`.
 **Input:** JSON `{"category_id": <id>}` to assign, `{"category_id": null}` to uncategorize, or `{"is_income": true, "category_id": null}` to mark "To Be Budgeted" (**changed this slice** — `is_income` toggle added).
 **Expected output:** `200`, JSON `{"id": ..., "category_id": ..., "category_name": ..., "is_income": ...}` reflecting the new state.
-**Side effects:** `Transaction.category_id` and/or `Transaction.is_income` updated. Setting `is_income: true` implicitly clears `category_id` to `null` (they're mutually exclusive — see error cases); setting a non-null `category_id` implicitly clears `is_income` to `false`.
+**Side effects:** `Transaction.category_id` and/or `Transaction.is_income` updated. Setting `is_income: true` implicitly clears `category_id` to `null` (they're mutually exclusive — see error cases); **any `category_id` in the body — a real id OR an explicit `null` — implicitly clears `is_income` to `false` unless the same request also sets `is_income`** (changes/011). Without the `null` case, a transaction marked "To Be Budgeted" could never be moved back to plain uncategorized.
 
 #### Error cases
 - **When no/invalid access token, Then** `401`.
@@ -45,9 +45,48 @@ Lets a user see their transactions and assign them to a budget category (or unca
 - **When `category_id` is a non-null value that exists but belongs to a different user, Then** `403`.
 - **When `is_income: true` is sent together with a non-null `category_id`, Then** `400` — mutually exclusive, a transaction is either assigned to a category or marked "To Be Budgeted," never both.
 
+### POST /api/transactions  (changes/011 — manual add)
+
+**Setup:** An authenticated user who owns at least one `Account` (and the
+category, if one is given).
+**Action:** `POST /api/transactions`, `Authorization: Bearer <access token>`.
+**Input:** JSON `{"account_id": <id>, "posted_at": "YYYY-MM-DD", "amount":
+"<decimal>", "description": "<text>", "category_id": <id>?}`.
+**Expected output:** `201`, the created transaction in the same shape as a
+`GET /api/transactions` row. `is_income` is always `false` on creation;
+`plaid_transaction_id` stays `null` (this is a manual entry, not a Plaid
+import). Sign follows the app convention — negative = spending, positive =
+inflow.
+**Side effects:** One `Transaction` row created under the given account.
+
+#### Error cases
+- **When no/invalid access token, Then** `401`.
+- **When `account_id`, `posted_at`, `amount`, or `description` is missing,
+  Then** `400`.
+- **When `posted_at` is not an ISO date, or `amount` is not a number,
+  Then** `400`.
+- **When the account isn't found, Then** `404`; **when it belongs to
+  another user, Then** `403`. Same for `category_id` when supplied.
+
+### DELETE /api/transactions/<int:transaction_id>  (changes/011)
+
+**Setup:** An authenticated user who owns the target transaction (via its
+account).
+**Action:** `DELETE /api/transactions/<transaction_id>`.
+**Expected output:** `200`, JSON `{"status": "deleted"}`.
+**Side effects:** The `Transaction` row is deleted. Works for any owned
+transaction, manual or Plaid-synced — a synced one *can* reappear if a
+later `/transactions/sync` reports it as `modified` (accepted: if Plaid
+still has it and changes it, you probably want it back).
+
+#### Error cases
+- **When no/invalid access token, Then** `401`.
+- **When the transaction isn't found, Then** `404`.
+- **When it belongs to another user, Then** `403` (and it is not deleted).
+
 ## Notes
 - Reuses the same 404-for-nonexistent / 403-for-wrong-owner IDOR pattern as `budget-api.md`'s `_get_owned_category`, extended to also cover transaction ownership (via a join through `Account`, not a direct column — `Transaction` has no `user_id` of its own).
-- No transaction *creation* endpoint in this slice — transactions currently only come from `seed_demo.py` or (once built) SimpleFIN sync. Categorizing is the only mutation this slice adds.
+- No transaction *creation* endpoint in the 002/005 slices — transactions came only from `seed_demo.py` or Plaid sync. **changes/011 adds manual `POST` and `DELETE`** (see the contract sections above).
 - `pending` (boolean, already on the model — SimpleFIN's pending-transaction flag) is returned as-is; no special handling needed yet, but worth surfacing to the frontend now so `simplefin-sync.md` doesn't need a follow-up API change later.
 - **`is_income` (005):** new `Transaction.is_income` boolean, default `false`. Deliberately a flag on the existing model, not an auto-created "To Be Budgeted" `Category` row — keeps the category table free of synthetic entries and reuses this same PATCH endpoint/dropdown rather than adding a new relationship type. Mutual exclusivity with `category_id` is enforced server-side on every write (see § PATCH error cases), so no query anywhere needs to defensively check both.
 - **No per-transaction backfill; one-time starting-balance reconciliation instead (005, decided 2026-08-26):** existing transactions keep `is_income=false`. Separately, a one-off script (run once at ship time, not part of any API endpoint) creates exactly one synthetic `Transaction` per `Account` — `is_income: true`, `amount` = the account's current `balance`, `description: "Starting Balance"`, `category_id: null` — so `ready_to_assign` reflects money already in the bank without importing transaction history. See `changes/005-budget-targets-and-tbb/plan.md`'s Constraints. Does not repeat automatically for accounts connected after this ships — that's future scope for `plaid-connect.md`/`accounts-api.md`, not this slice.
@@ -86,3 +125,11 @@ Lets a user see their transactions and assign them to a budget category (or unca
 - 005 (2026-08-26) — added `is_income` toggle to § PATCH (mutually exclusive with `category_id`) and `is_income` to § GET's response shape — "To Be Budgeted." Second half of `changes/005-budget-targets-and-tbb/plan.md`, paired with `spec/budget-api.md`'s `ready_to_assign` change. Not yet built.
 - 005 (2026-08-26) — `is_income` tests locked: 7 tests in `tests/test_transactions.py`, all confirmed red. New `Transaction.is_income` column (`models.py`) + migration `a1b2c3d4e5f6` added as test infrastructure — the routes already exist (built in 002), so unlike the `CategoryTarget` case there is no routing `404` to stand in for a missing column; the column must be real for the arrange/side-effect assertions to fail cleanly on values rather than `AttributeError`. No handler/formula logic touched — that's the build's job. Not yet built.
 - 005 (2026-08-26) — built. `transactions_api.py`: `_serialize` gains `is_income`; `patch_transaction` accepts an `is_income` toggle, rejects `is_income: true` + non-null `category_id` with `400`, and applies the two implicit clears (marking `is_income` clears `category_id`, assigning a category clears `is_income`). All 7 tests green; 103/103 full suite (9 skipped — Plaid sandbox). Spec status → built.
+- 011 (2026-08-27) — bug fix + manual editing. § PATCH: a `category_id`
+  key of `null` now also clears `is_income` (a TBB transaction can be
+  moved back to plain uncategorized — it couldn't before). New
+  § POST /api/transactions (manual add, requires an owned account) and
+  § DELETE /api/transactions/<id>. `transactions_api.py` +
+  `tests/test_transactions.py` (11 new); `TransactionsPage.tsx` gains an
+  add form + per-row delete; e2e `transactions.spec.ts` (+2). Full suite
+  192 passed / 6 skipped. See `changes/011-transaction-editing-and-import-cutoff/plan.md`.

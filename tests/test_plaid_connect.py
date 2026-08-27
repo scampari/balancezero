@@ -291,3 +291,39 @@ def test_remove_other_users_item_returns_403(client, test_user, auth_headers):
 
 def test_remove_item_as_demo_returns_403(client, demo_auth_headers):
     assert client.delete("/api/plaid/items/1", headers=demo_auth_headers).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# import cutoff (changes/011)
+# ---------------------------------------------------------------------------
+
+
+@requires_plaid_sandbox
+def test_connect_sets_import_cutoff_to_today(client, test_user, auth_headers):
+    from datetime import date
+
+    client.post(
+        "/api/plaid/connect",
+        json={"public_token": _create_sandbox_public_token()},
+        headers=auth_headers,
+    )
+    item = PlaidItem.query.filter_by(user_id=test_user.id).first()
+    assert item.import_cutoff == date.today()
+
+
+def test_reconnect_does_not_move_the_import_cutoff(client, test_user, auth_headers, plaid_item, monkeypatch):
+    from datetime import date, timedelta
+
+    earlier = date.today() - timedelta(days=10)
+    plaid_item.import_cutoff = earlier
+    db.session.commit()
+    _stub_plaid(monkeypatch, _StubExchangeClient(item_id="test-item-id"))
+
+    client.post(
+        "/api/plaid/connect",
+        json={"public_token": "public-sandbox-anything"},
+        headers=auth_headers,
+    )
+
+    db.session.refresh(plaid_item)
+    assert plaid_item.import_cutoff == earlier  # unchanged on re-link

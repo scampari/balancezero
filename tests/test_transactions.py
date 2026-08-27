@@ -421,3 +421,164 @@ def test_patch_assign_category_response_includes_is_income(client, test_user, au
     body = response.get_json()
     assert "is_income" in body
     assert body["is_income"] is False
+
+
+# ---------------------------------------------------------------------------
+# PATCH — "Uncategorized" clears "To Be Budgeted" (changes/011 bug fix)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_category_null_clears_is_income(client, test_user, auth_headers):
+    # Arrange — a transaction marked "To Be Budgeted"
+    account = _make_account(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "500.00", "Paycheck")
+    client.patch(f"/api/transactions/{txn.id}", json={"is_income": True, "category_id": None}, headers=auth_headers)
+    db.session.refresh(txn)
+    assert txn.is_income is True
+
+    # Act — choose "Uncategorized" (category_id: null, no is_income key)
+    response = client.patch(f"/api/transactions/{txn.id}", json={"category_id": None}, headers=auth_headers)
+
+    # Assert — back to plain uncategorized, not stuck as TBB
+    assert response.status_code == 200
+    assert response.get_json()["is_income"] is False
+    db.session.refresh(txn)
+    assert txn.is_income is False
+    assert txn.category_id is None
+
+
+def test_patch_explicit_is_income_false_with_null_category_still_works(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "500.00", "Paycheck")
+    client.patch(f"/api/transactions/{txn.id}", json={"is_income": True, "category_id": None}, headers=auth_headers)
+
+    response = client.patch(
+        f"/api/transactions/{txn.id}", json={"is_income": False, "category_id": None}, headers=auth_headers
+    )
+    assert response.status_code == 200
+    db.session.refresh(txn)
+    assert txn.is_income is False
+
+
+# ---------------------------------------------------------------------------
+# POST /api/transactions — manual add
+# ---------------------------------------------------------------------------
+
+
+def test_create_manual_transaction(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    category = _make_category(test_user.id)
+
+    response = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account.id,
+            "posted_at": CURRENT_MONTH.isoformat(),
+            "amount": "-42.50",
+            "description": "Cash lunch",
+            "category_id": category.id,
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["description"] == "Cash lunch"
+    assert body["amount"] == "-42.50"
+    assert body["category_id"] == category.id
+    assert body["is_income"] is False
+
+    row = db.session.get(Transaction, body["id"])
+    assert row.plaid_transaction_id is None  # manual, not from Plaid
+
+
+def test_create_manual_transaction_without_category(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    response = client.post(
+        "/api/transactions",
+        json={"account_id": account.id, "posted_at": CURRENT_MONTH.isoformat(), "amount": "10", "description": "X"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 201
+    assert response.get_json()["category_id"] is None
+
+
+def test_create_manual_transaction_missing_fields_returns_400(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    response = client.post(
+        "/api/transactions",
+        json={"account_id": account.id, "amount": "10"},  # no posted_at, no description
+        headers=auth_headers,
+    )
+    assert response.status_code == 400
+
+
+def test_create_manual_transaction_bad_amount_returns_400(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    response = client.post(
+        "/api/transactions",
+        json={"account_id": account.id, "posted_at": CURRENT_MONTH.isoformat(), "amount": "abc", "description": "X"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 400
+
+
+def test_create_manual_transaction_on_another_users_account_returns_403(client, test_user, auth_headers):
+    other = User(username="other", password_hash=generate_password_hash("x" * 12))
+    db.session.add(other)
+    db.session.flush()
+    their_account = _make_account(other.id)
+
+    response = client.post(
+        "/api/transactions",
+        json={
+            "account_id": their_account.id,
+            "posted_at": CURRENT_MONTH.isoformat(),
+            "amount": "10",
+            "description": "X",
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 403
+
+
+def test_create_manual_transaction_without_token_returns_401(client, test_user):
+    assert client.post("/api/transactions", json={}).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/transactions/<id>
+# ---------------------------------------------------------------------------
+
+
+def test_delete_transaction(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "-5.00", "Oops")
+
+    response = client.delete(f"/api/transactions/{txn.id}", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "deleted"}
+    assert db.session.get(Transaction, txn.id) is None
+
+
+def test_delete_nonexistent_transaction_returns_404(client, test_user, auth_headers):
+    assert client.delete("/api/transactions/999999", headers=auth_headers).status_code == 404
+
+
+def test_delete_another_users_transaction_returns_403(client, test_user, auth_headers):
+    other = User(username="other", password_hash=generate_password_hash("x" * 12))
+    db.session.add(other)
+    db.session.flush()
+    their_account = _make_account(other.id)
+    their_txn = _make_transaction(their_account.id, CURRENT_MONTH, "-5.00", "Theirs")
+
+    response = client.delete(f"/api/transactions/{their_txn.id}", headers=auth_headers)
+    assert response.status_code == 403
+    assert db.session.get(Transaction, their_txn.id) is not None
+
+
+def test_delete_transaction_without_token_returns_401(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "-5.00", "X")
+    assert client.delete(f"/api/transactions/{txn.id}").status_code == 401

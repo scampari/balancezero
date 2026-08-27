@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import plaid
@@ -159,6 +159,9 @@ def connect():
             access_token_encrypted=encrypted,
             institution_name=institution_name,
             institution_id=institution_id,
+            # A fresh connection imports only transactions posted from today
+            # on — not the ~90 days of history Plaid's first sync returns.
+            import_cutoff=date.today(),
         )
         db.session.add(item)
 
@@ -273,6 +276,19 @@ _EMPTY_COUNTERS = {
 }
 
 
+def _within_import_window(plaid_transaction, item):
+    """A fresh connection ignores the historical backfill — only transactions
+    dated on/after item.import_cutoff are imported. Null cutoff (backfilled
+    rows) = import everything. Applies to `added` and `modified`; `removed`
+    is naturally a no-op for anything never imported."""
+    if item.import_cutoff is None:
+        return True
+    posted = plaid_transaction["date"]
+    if isinstance(posted, str):
+        posted = date.fromisoformat(posted)
+    return posted >= item.import_cutoff
+
+
 def _is_mutation_during_pagination(exception):
     """Plaid raises this specific ApiException when the Item's underlying
     data changes mid-pagination (common right after connect, while the
@@ -330,10 +346,14 @@ def _sync_one_item(user, item):
             return account_by_plaid_id[plaid_account_id]
 
         for plaid_transaction in response["added"]:
+            if not _within_import_window(plaid_transaction, item):
+                continue
             _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction)
             counters["transactions_added"] += 1
 
         for plaid_transaction in response["modified"]:
+            if not _within_import_window(plaid_transaction, item):
+                continue
             _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction)
             counters["transactions_modified"] += 1
 

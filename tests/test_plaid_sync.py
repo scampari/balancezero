@@ -63,7 +63,7 @@ def _connect_with_dynamic_test_data(client, auth_headers):
     assert resp.status_code == 200, "test setup failed: real /connect call did not succeed"
 
 
-def _seed_item(user, plaid_item_id="seed-item", cursor=None, name="Seed Bank"):
+def _seed_item(user, plaid_item_id="seed-item", cursor=None, name="Seed Bank", import_cutoff=None):
     """A PlaidItem with a real-Fernet-encrypted fake token — for offline
     tests that mock transactions_sync."""
     fernet = Fernet(os.environ["PLAID_ENCRYPTION_KEY"])
@@ -73,6 +73,7 @@ def _seed_item(user, plaid_item_id="seed-item", cursor=None, name="Seed Bank"):
         access_token_encrypted=fernet.encrypt(b"access-sandbox-fake"),
         sync_cursor=cursor,
         institution_name=name,
+        import_cutoff=import_cutoff,
     )
     db.session.add(item)
     db.session.commit()
@@ -337,3 +338,61 @@ def test_sync_is_incremental_on_second_call(client, test_user, auth_headers):
     body = second.get_json()
     assert body["totals"]["transactions_added"] == 0
     assert body["totals"]["transactions_modified"] == 0
+
+
+# ---------------------------------------------------------------------------
+# import cutoff — a fresh connection skips the historical backfill (changes/011)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_skips_added_transactions_before_the_import_cutoff(client, test_user, auth_headers, monkeypatch):
+    from datetime import date, timedelta
+
+    cutoff = date.today()
+    item = _seed_item(test_user, "item-cutoff", import_cutoff=cutoff)
+    account = Account(user_id=test_user.id, name="Checking", plaid_account_id="acc-1", plaid_item_id=item.id)
+    db.session.add(account)
+    db.session.commit()
+
+    old = (cutoff - timedelta(days=30)).isoformat()
+    new = cutoff.isoformat()
+
+    class _MixedAges:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[
+                    {"transaction_id": "old-1", "account_id": "acc-1", "amount": 5, "date": old, "name": "OLD", "pending": False},
+                    {"transaction_id": "new-1", "account_id": "acc-1", "amount": 7, "date": new, "name": "NEW", "pending": False},
+                ]
+            )
+
+    _patch_client(monkeypatch, _MixedAges())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.get_json()["totals"]["transactions_added"] == 1  # only the on-cutoff one
+    descriptions = {t.description for t in Transaction.query.filter_by(account_id=account.id).all()}
+    assert descriptions == {"NEW"}
+
+
+def test_sync_with_null_cutoff_imports_all_history(client, test_user, auth_headers, monkeypatch):
+    from datetime import date, timedelta
+
+    item = _seed_item(test_user, "item-nocutoff", import_cutoff=None)
+    account = Account(user_id=test_user.id, name="Checking", plaid_account_id="acc-1", plaid_item_id=item.id)
+    db.session.add(account)
+    db.session.commit()
+
+    long_ago = (date.today() - timedelta(days=200)).isoformat()
+
+    class _OldOnly:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[{"transaction_id": "old-1", "account_id": "acc-1", "amount": 5, "date": long_ago, "name": "OLD", "pending": False}]
+            )
+
+    _patch_client(monkeypatch, _OldOnly())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+    assert response.get_json()["totals"]["transactions_added"] == 1

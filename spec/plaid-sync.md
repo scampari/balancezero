@@ -267,3 +267,9 @@ server-side logging of the swallowed exception in `sync()`.
   (migration `035d62499d87`); `_upsert_account` tags `plaid_item_id`;
   `PlaidItem.last_synced_at` added. See the rewrite note above the contract
   and `changes/008-multi-institution-plaid/plan.md`.
+- 011 (2026-08-27) — fresh-connection import cutoff. `_sync_one_item` skips
+  any `added` / `modified` transaction dated before `PlaidItem.import_cutoff`
+  (a fresh connect only imports transactions posted on/after the connect
+  date — not the ~90 days of history Plaid's first sync returns). `NULL`
+  cutoff = import everything. `removed` is unaffected (a no-op for anything
+  never imported). Tests in `tests/test_plaid_sync.py`.
