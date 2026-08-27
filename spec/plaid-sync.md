@@ -30,6 +30,31 @@ ever a stub, never built).
 
 ## Integration test contract
 
+> **`changes/008` rewrite (2026-08-27) — multi-institution.** `/sync` now
+> fans out over every one of the user's `PlaidItem` rows. Superseded points
+> (the sign-convention Notes, mutation-during-pagination handling, per-page
+> commit, `removed` = authoritative delete all still stand):
+>
+> - The paginated loop moved into `_sync_one_item(user, item)` — per-item
+>   `access_token` decrypt, per-item `sync_cursor` (was
+>   `User.plaid_sync_cursor`, now `PlaidItem.sync_cursor`), per-item
+>   mutation retry. On success it sets `PlaidItem.last_synced_at`.
+> - `_upsert_account` takes the `PlaidItem` and sets `account.plaid_item_id`
+>   on create **and** update (heals backfilled / re-linked rows).
+> - **Response:** `{"items":[{id, institution_name, status:"ok"|"error",
+>   error?, accounts_synced, transactions_added, transactions_modified,
+>   transactions_removed}], "totals":{<summed counts>}, "ok": <all ok>}`.
+> - **Status codes:** no `PlaidItem` rows → `409` (unchanged); ≥1 item
+>   synced → `200` (with `ok` reflecting whether any failed); **every**
+>   item failed → `502`; demo → `403`.
+> - One item's failure never aborts the others — its committed pages and
+>   advanced cursor stand, a retry resumes it.
+> - **Tests:** `tests/test_plaid_sync.py` rewritten. Multi-item /
+>   partial-failure / all-fail / `last_synced_at` / modified / removed run
+>   offline against seeded `PlaidItem`s with a mocked `transactions_sync`;
+>   the real first-pull and incremental-cursor tests stay
+>   `@requires_plaid_sandbox`.
+
 ### POST /api/plaid/sync
 
 **Setup:** An authenticated, non-demo user with an existing Plaid
@@ -236,3 +261,9 @@ server-side logging of the swallowed exception in `sync()`.
   `250dac683643` adds `User.plaid_sync_cursor`. Mutation-during-pagination
   handling added after live testing surfaced it (see Notes). All 8 green;
   one accepted transient Sandbox flake (see Tests).
+- 008 (2026-08-27) — multi-institution. `/sync` loops every `PlaidItem`,
+  per-item token + cursor + mutation-retry; per-item results + summed
+  `totals` + `ok`; all-fail → `502`. Cursor moved `User → PlaidItem`
+  (migration `035d62499d87`); `_upsert_account` tags `plaid_item_id`;
+  `PlaidItem.last_synced_at` added. See the rewrite note above the contract
+  and `changes/008-multi-institution-plaid/plan.md`.

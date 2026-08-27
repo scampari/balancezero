@@ -238,6 +238,9 @@ export interface Account {
   balance: string
   available_balance: string | null
   balance_date: string | null
+  // Our own PlaidItem row id (not a Plaid identifier). Null for demo/manual
+  // accounts and for accounts whose institution was unlinked.
+  plaid_item_id: number | null
 }
 
 export async function listAccounts(accessToken: string): Promise<{ accounts: Account[] }> {
@@ -246,11 +249,35 @@ export async function listAccounts(accessToken: string): Promise<{ accounts: Acc
   return res.json()
 }
 
-export interface PlaidSyncResult {
+interface PlaidSyncCounts {
   accounts_synced: number
   transactions_added: number
   transactions_modified: number
   transactions_removed: number
+}
+
+export interface PlaidSyncItemResult extends PlaidSyncCounts {
+  id: number
+  institution_name: string
+  status: 'ok' | 'error'
+  error?: string
+}
+
+// One /plaid/sync call fans out over every linked institution. `ok` is true
+// only when every one succeeded; individual failures show up as items with
+// status 'error' (the whole call still returns 200 as long as one succeeded).
+export interface PlaidSyncResult {
+  items: PlaidSyncItemResult[]
+  totals: PlaidSyncCounts
+  ok: boolean
+}
+
+export interface PlaidInstitution {
+  id: number
+  institution_name: string
+  institution_id: string | null
+  last_synced: string | null
+  account_count: number
 }
 
 export async function triggerPlaidSync(accessToken: string): Promise<PlaidSyncResult> {
@@ -259,8 +286,14 @@ export async function triggerPlaidSync(accessToken: string): Promise<PlaidSyncRe
   return res.json()
 }
 
-export async function getPlaidStatus(accessToken: string): Promise<{ connected: boolean }> {
+export async function getPlaidStatus(accessToken: string): Promise<{ items: PlaidInstitution[] }> {
   const res = await request('/plaid/status', { method: 'GET' }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
+export async function removePlaidItem(accessToken: string, itemId: number): Promise<{ status: string }> {
+  const res = await request(`/plaid/items/${itemId}`, { method: 'DELETE' }, accessToken)
   await throwIfError(res)
   return res.json()
 }
@@ -276,13 +309,18 @@ export async function createPlaidLinkToken(accessToken: string): Promise<{ link_
 
 // Step 2: after the user completes Link, the widget returns a public_token to
 // the browser; the backend exchanges it for the permanent (encrypted-at-rest)
-// access_token. The public_token is opaque and single-use — safe to send here.
-export async function connectPlaid(accessToken: string, publicToken: string): Promise<{ status: string }> {
-  const res = await request(
-    '/plaid/connect',
-    { method: 'POST', body: JSON.stringify({ public_token: publicToken }) },
-    accessToken,
-  )
+// access_token and stores a PlaidItem. The public_token is opaque and
+// single-use — safe to send here. The institution name/id come from Plaid
+// Link's onSuccess metadata so the linked-institutions list can label the row.
+export async function connectPlaid(
+  accessToken: string,
+  publicToken: string,
+  institution?: { name?: string | null; id?: string | null },
+): Promise<{ status: string; item: PlaidInstitution }> {
+  const body: Record<string, string> = { public_token: publicToken }
+  if (institution?.name) body.institution_name = institution.name
+  if (institution?.id) body.institution_id = institution.id
+  const res = await request('/plaid/connect', { method: 'POST', body: JSON.stringify(body) }, accessToken)
   await throwIfError(res)
   return res.json()
 }
@@ -419,7 +457,7 @@ export function triggerPlaidSyncWithAutoRefresh(
 export function getPlaidStatusWithAutoRefresh(
   accessToken: string,
   onTokenRefreshed: (token: string) => void,
-): Promise<{ connected: boolean }> {
+): Promise<{ items: PlaidInstitution[] }> {
   return withAutoRefresh((token) => getPlaidStatus(token), accessToken, onTokenRefreshed)
 }
 
@@ -434,6 +472,19 @@ export function connectPlaidWithAutoRefresh(
   accessToken: string,
   onTokenRefreshed: (token: string) => void,
   publicToken: string,
+  institution?: { name?: string | null; id?: string | null },
+): Promise<{ status: string; item: PlaidInstitution }> {
+  return withAutoRefresh(
+    (token) => connectPlaid(token, publicToken, institution),
+    accessToken,
+    onTokenRefreshed,
+  )
+}
+
+export function removePlaidItemWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  itemId: number,
 ): Promise<{ status: string }> {
-  return withAutoRefresh((token) => connectPlaid(token, publicToken), accessToken, onTokenRefreshed)
+  return withAutoRefresh((token) => removePlaidItem(token, itemId), accessToken, onTokenRefreshed)
 }

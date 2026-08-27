@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { usePlaidLink } from 'react-plaid-link'
+import { usePlaidLink, type PlaidLinkOnSuccessMetadata } from 'react-plaid-link'
 import { connectPlaidWithAutoRefresh, createPlaidLinkTokenWithAutoRefresh } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
@@ -56,10 +56,10 @@ const isOAuthRedirectBack =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('oauth_state_id')
 
 export function ConnectBankButton({
-  connected,
+  hasItems,
   onConnected,
 }: {
-  connected: boolean
+  hasItems: boolean
   onConnected: () => void
 }) {
   const { accessToken, setAccessToken } = useAuth()
@@ -82,12 +82,15 @@ export function ConnectBankButton({
   }, [])
 
   const onSuccess = useCallback(
-    async (publicToken: string | null) => {
+    async (publicToken: string | null, metadata: PlaidLinkOnSuccessMetadata) => {
       if (!accessToken || !publicToken) return
       setIsWorking(true)
       setError(null)
       try {
-        await connectPlaidWithAutoRefresh(accessToken, setAccessToken, publicToken)
+        await connectPlaidWithAutoRefresh(accessToken, setAccessToken, publicToken, {
+          name: metadata.institution?.name,
+          id: metadata.institution?.institution_id,
+        })
         onConnected()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not finish connecting. Please try again.')
@@ -129,7 +132,7 @@ export function ConnectBankButton({
     }
   }
 
-  const label = connected ? 'Reconnect bank' : 'Connect a bank'
+  const label = hasItems ? 'Connect another bank' : 'Connect a bank'
   const busy = isWorking || (linkToken !== null && !ready)
 
   return (
@@ -139,8 +142,8 @@ export function ConnectBankButton({
         onClick={handleClick}
         disabled={busy}
         className={
-          connected
-            ? 'rounded-md px-3 py-1.5 text-sm font-medium text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text) disabled:cursor-not-allowed disabled:opacity-60'
+          hasItems
+            ? 'rounded-md border border-(--color-border) px-3 py-1.5 text-sm font-medium text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text) disabled:cursor-not-allowed disabled:opacity-60'
             : 'rounded-md bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60'
         }
       >

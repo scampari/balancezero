@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 import plaid
@@ -7,13 +8,15 @@ from flask_jwt_extended import jwt_required
 from plaid.api import plaid_api as plaid_api_client
 from plaid.model.country_code import CountryCode
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.products import Products
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
+from sqlalchemy.exc import IntegrityError
 
 from api_helpers import current_user_id
-from models import Account, Transaction, User, db
+from models import Account, PlaidItem, Transaction, User, db
 
 plaid_bp = Blueprint("plaid_api", __name__, url_prefix="/api/plaid")
 
@@ -23,6 +26,7 @@ plaid_bp = Blueprint("plaid_api", __name__, url_prefix="/api/plaid")
 # spec/simplefin-connect.md needed don't apply to this threat model — see
 # spec/plaid-connect.md's Notes.
 _GENERIC_PLAID_ERROR = {"error": "could not reach Plaid — please try again"}
+_UNLINKED_LABEL = "Linked bank"  # shown when a PlaidItem has no institution_name (backfilled rows)
 
 _PLAID_ENVIRONMENTS = {"sandbox": plaid.Environment.Sandbox, "production": plaid.Environment.Production}
 
@@ -62,9 +66,21 @@ def _decrypt(encrypted_value):
 def _load_non_demo_user():
     """Returns the current user, or None if they're the demo user — callers
     return 403 on None. Centralizes the "no real bank for the demo account"
-    guard now that three routes need it."""
+    guard now that four routes need it."""
     user = db.session.get(User, current_user_id())
     return None if user.is_demo else user
+
+
+def _item_summary(item):
+    """Client-facing view of one linked institution. Never includes the
+    access token or the raw Plaid item id."""
+    return {
+        "id": item.id,
+        "institution_name": item.institution_name or _UNLINKED_LABEL,
+        "institution_id": item.institution_id,
+        "last_synced": item.last_synced_at.isoformat() if item.last_synced_at else None,
+        "account_count": Account.query.filter_by(plaid_item_id=item.id).count(),
+    }
 
 
 @plaid_bp.route("/link-token", methods=["POST"])
@@ -113,39 +129,98 @@ def connect():
     public_token = data.get("public_token")
     if not public_token:
         return jsonify({"error": "public_token is required"}), 400
+    institution_name = data.get("institution_name")
+    institution_id = data.get("institution_id")
 
     exchange_request = ItemPublicTokenExchangeRequest(public_token=public_token)
     try:
         response = _plaid_client().item_public_token_exchange(exchange_request)
     except Exception:
         # Never relay Plaid's raw error back to the client — same
-        # sanitization discipline as the SimpleFIN-era /connect. Broad
-        # except for the same reason as create_link_token above.
+        # sanitization discipline as the SimpleFIN-era /connect.
         return jsonify(_GENERIC_PLAID_ERROR), 502
 
-    user.plaid_access_token_encrypted = _encrypt(response["access_token"])
-    user.plaid_item_id = response["item_id"]
-    db.session.commit()
+    plaid_item_id = response["item_id"]
+    encrypted = _encrypt(response["access_token"])
 
-    return jsonify({"status": "connected"}), 200
+    # Re-linking the same institution (token repair, or a second Link run)
+    # updates the existing row in place — keep its cursor and accounts.
+    item = PlaidItem.query.filter_by(user_id=user.id, plaid_item_id=plaid_item_id).first()
+    if item is not None:
+        item.access_token_encrypted = encrypted
+        if institution_name:
+            item.institution_name = institution_name
+        if institution_id:
+            item.institution_id = institution_id
+    else:
+        item = PlaidItem(
+            user_id=user.id,
+            plaid_item_id=plaid_item_id,
+            access_token_encrypted=encrypted,
+            institution_name=institution_name,
+            institution_id=institution_id,
+        )
+        db.session.add(item)
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        # plaid_item_id is globally unique — this Item belongs to another
+        # BalanceZero account.
+        db.session.rollback()
+        return jsonify({"error": "this institution is already linked to another account"}), 409
+
+    return jsonify({"status": "connected", "item": _item_summary(item)}), 200
 
 
 @plaid_bp.route("/status", methods=["GET"])
 @jwt_required()
 def status():
     user = db.session.get(User, current_user_id())
-    return jsonify({"connected": user.plaid_access_token_encrypted is not None}), 200
+    items = PlaidItem.query.filter_by(user_id=user.id).order_by(PlaidItem.id).all()
+    return jsonify({"items": [_item_summary(item) for item in items]}), 200
 
 
-def _upsert_account(user, plaid_account):
+@plaid_bp.route("/items/<int:item_id>", methods=["DELETE"])
+@jwt_required()
+def remove_item(item_id):
+    user = _load_non_demo_user()
+    if user is None:
+        return jsonify({"error": "the demo account cannot connect a real bank"}), 403
+
+    item = db.session.get(PlaidItem, item_id)
+    if item is None:
+        return jsonify({"error": "no such linked institution"}), 404
+    # Ownership by direct column comparison — the IDOR pattern from
+    # context/security-requirements.md.
+    if item.user_id != user.id:
+        return jsonify({"error": "no such linked institution"}), 403
+
+    # Best-effort: tell Plaid to invalidate the token / stop billing. Local
+    # cleanup must not depend on Plaid being reachable.
+    try:
+        _plaid_client().item_remove(ItemRemoveRequest(access_token=_decrypt(item.access_token_encrypted)))
+    except Exception:
+        pass
+
+    # Accounts (and their transactions) are kept — the FK is ON DELETE SET
+    # NULL, so they become inert "not linked" rows. See spec/plaid-connect.md.
+    db.session.delete(item)
+    db.session.commit()
+    return jsonify({"status": "removed"}), 200
+
+
+def _upsert_account(user, plaid_account, plaid_item):
     """Returns the local Account row for this Plaid account, creating it if
-    new. Balances are always overwritten — SimpleFIN's-era/Plaid's data,
-    never user-edited."""
+    new. Balances are always overwritten (Plaid-owned, never user-edited).
+    plaid_item_id is set on create AND update, so a backfilled or re-linked
+    account gets re-attached to its institution."""
     account = Account.query.filter_by(user_id=user.id, plaid_account_id=plaid_account["account_id"]).first()
     balances = plaid_account["balances"]
     if account is None:
         account = Account(user_id=user.id, plaid_account_id=plaid_account["account_id"], currency="USD")
         db.session.add(account)
+    account.plaid_item_id = plaid_item.id
     account.name = plaid_account["name"]
     account.currency = balances["iso_currency_code"] or account.currency
     account.balance = balances["current"] or 0
@@ -190,6 +265,13 @@ _SYNC_PAGE_SIZE = 500
 # pathologically busy Item can't loop forever.
 _MUTATION_RETRY_LIMIT = 3
 
+_EMPTY_COUNTERS = {
+    "accounts_synced": 0,
+    "transactions_added": 0,
+    "transactions_modified": 0,
+    "transactions_removed": 0,
+}
+
 
 def _is_mutation_during_pagination(exception):
     """Plaid raises this specific ApiException when the Item's underlying
@@ -201,59 +283,42 @@ def _is_mutation_during_pagination(exception):
     return body is not None and "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" in str(body)
 
 
-@plaid_bp.route("/sync", methods=["POST"])
-@jwt_required()
-def sync():
-    user = _load_non_demo_user()
-    if user is None:
-        return jsonify({"error": "the demo account cannot connect a real bank"}), 403
-
-    if user.plaid_access_token_encrypted is None:
-        return jsonify({"error": "not connected to Plaid"}), 409
-
-    access_token = _decrypt(user.plaid_access_token_encrypted)
+def _sync_one_item(user, item):
+    """Runs the full paginated /transactions/sync loop for one linked
+    institution against its own token + cursor. Commits per page (so a
+    mid-sync failure is resumable) and sets last_synced_at on success.
+    Raises on an unrecoverable Plaid error — the caller records that item
+    as failed and moves on to the next."""
+    access_token = _decrypt(item.access_token_encrypted)
 
     # Where this update began — mutation-during-pagination restarts here
-    # (Plaid's documented semantics), which is safe because upserts are
-    # idempotent: re-fetching already-committed pages just rewrites the
-    # same rows.
-    update_start_cursor = user.plaid_sync_cursor
+    # (Plaid's documented semantics), safe because upserts are idempotent.
+    update_start_cursor = item.sync_cursor
     mutation_retries = 0
 
     accounts_synced_ids = set()
-    transactions_added = 0
-    transactions_modified = 0
-    transactions_removed = 0
+    counters = dict(_EMPTY_COUNTERS)
 
     has_more = True
     while has_more:
         sync_kwargs = {"access_token": access_token, "count": _SYNC_PAGE_SIZE}
-        if user.plaid_sync_cursor:
-            sync_kwargs["cursor"] = user.plaid_sync_cursor
+        if item.sync_cursor:
+            sync_kwargs["cursor"] = item.sync_cursor
         try:
             response = _plaid_client().transactions_sync(TransactionsSyncRequest(**sync_kwargs))
         except Exception as exc:
             if _is_mutation_during_pagination(exc) and mutation_retries < _MUTATION_RETRY_LIMIT:
                 mutation_retries += 1
-                user.plaid_sync_cursor = update_start_cursor
+                item.sync_cursor = update_start_cursor
                 db.session.commit()
                 accounts_synced_ids.clear()
-                transactions_added = transactions_modified = transactions_removed = 0
+                counters = dict(_EMPTY_COUNTERS)
                 continue
-            # Never relay Plaid's raw error back to the client — same
-            # sanitization discipline as connect/link-token. Whatever pages
-            # already committed (in a prior loop iteration) keep their
-            # state; on a mutation error the cursor was already reset to
-            # the update's start, on any other failure it stays at the
-            # last committed page — either way a retried sync resumes
-            # safely.
-            return jsonify(_GENERIC_PLAID_ERROR), 502
+            raise
 
-        # accounts_synced counts distinct accounts — Plaid resends the full
-        # account list on every page, not just accounts touched on that page.
         account_by_plaid_id = {}
         for plaid_account in response["accounts"]:
-            account = _upsert_account(user, plaid_account)
+            account = _upsert_account(user, plaid_account, item)
             account_by_plaid_id[plaid_account["account_id"]] = account
             accounts_synced_ids.add(plaid_account["account_id"])
 
@@ -265,35 +330,67 @@ def sync():
             return account_by_plaid_id[plaid_account_id]
 
         for plaid_transaction in response["added"]:
-            account = _account_for(plaid_transaction["account_id"])
-            _upsert_transaction(account, plaid_transaction)
-            transactions_added += 1
+            _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction)
+            counters["transactions_added"] += 1
 
         for plaid_transaction in response["modified"]:
-            account = _account_for(plaid_transaction["account_id"])
-            _upsert_transaction(account, plaid_transaction)
-            transactions_modified += 1
+            _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction)
+            counters["transactions_modified"] += 1
 
         for removed_entry in response["removed"]:
             account = _account_for(removed_entry["account_id"])
             if account is not None and _delete_removed_transaction(account, removed_entry):
-                transactions_removed += 1
+                counters["transactions_removed"] += 1
 
-        # Per-page commit, not accumulate-then-commit-once: bounds memory on
-        # a large has_more history and makes a mid-sync failure resumable
-        # (the cursor only advances past pages that actually committed).
-        user.plaid_sync_cursor = response["next_cursor"]
+        item.sync_cursor = response["next_cursor"]
         has_more = response["has_more"]
         db.session.commit()
 
-    return (
-        jsonify(
-            {
-                "accounts_synced": len(accounts_synced_ids),
-                "transactions_added": transactions_added,
-                "transactions_modified": transactions_modified,
-                "transactions_removed": transactions_removed,
-            }
-        ),
-        200,
-    )
+    counters["accounts_synced"] = len(accounts_synced_ids)
+    item.last_synced_at = datetime.utcnow()
+    db.session.commit()
+    return counters
+
+
+@plaid_bp.route("/sync", methods=["POST"])
+@jwt_required()
+def sync():
+    user = _load_non_demo_user()
+    if user is None:
+        return jsonify({"error": "the demo account cannot connect a real bank"}), 403
+
+    items = PlaidItem.query.filter_by(user_id=user.id).order_by(PlaidItem.id).all()
+    if not items:
+        return jsonify({"error": "not connected to Plaid"}), 409
+
+    results = []
+    totals = dict(_EMPTY_COUNTERS)
+    any_ok = False
+
+    for item in items:
+        label = item.institution_name or _UNLINKED_LABEL
+        try:
+            counters = _sync_one_item(user, item)
+        except Exception:
+            # One institution's outage must not abort the others. Whatever
+            # pages already committed for this item keep their state; its
+            # cursor is where the last committed page left off, so a
+            # retried sync resumes safely.
+            db.session.rollback()
+            results.append({"id": item.id, "institution_name": label, "status": "error",
+                            "error": _GENERIC_PLAID_ERROR["error"], **_EMPTY_COUNTERS})
+            continue
+
+        any_ok = True
+        results.append({"id": item.id, "institution_name": label, "status": "ok", **counters})
+        for key in totals:
+            totals[key] += counters[key]
+
+    body = {
+        "items": results,
+        "totals": totals,
+        "ok": all(result["status"] == "ok" for result in results),
+    }
+    # 200 as long as at least one institution synced; 502 only if every one
+    # failed (nothing was accomplished — single-error UX).
+    return jsonify(body), (200 if any_ok else 502)
