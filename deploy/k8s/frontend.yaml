@@ -27,9 +27,12 @@ spec:
       containers:
         - name: frontend
           image: balancezero-frontend:latest
-          imagePullPolicy: IfNotPresent # local image, imported via k3d
+          imagePullPolicy: IfNotPresent # local image (k3d import, or `k3s ctr images import`)
           ports:
             - containerPort: 80
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 96Mi }
           readinessProbe:
             httpGet:
               path: /

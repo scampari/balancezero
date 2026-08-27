@@ -48,6 +48,9 @@ spec:
           volumeMounts:
             - name: pgdata
               mountPath: /var/lib/postgresql/data
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "balancezero"]
@@ -62,4 +65,4 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 2Gi
+            storage: 10Gi

@@ -29,13 +29,16 @@ spec:
       initContainers:
         - name: migrate
           image: balancezero-backend:latest
-          imagePullPolicy: IfNotPresent # local image, imported via k3d
+          imagePullPolicy: IfNotPresent # local image (k3d import, or `k3s ctr images import`)
           command: ["flask", "db", "upgrade"]
           envFrom:
             - secretRef:
                 name: balancezero-secrets
             - configMapRef:
                 name: balancezero-config
+          resources:
+            requests: { cpu: 25m, memory: 96Mi }
+            limits: { memory: 256Mi }
       containers:
         - name: backend
           image: balancezero-backend:latest
@@ -47,6 +50,9 @@ spec:
                 name: balancezero-secrets
             - configMapRef:
                 name: balancezero-config
+          resources:
+            requests: { cpu: 50m, memory: 160Mi }
+            limits: { memory: 384Mi }
           readinessProbe:
             httpGet:
               path: /api/health
@@ -62,5 +68,16 @@ metadata:
 data:
   FLASK_APP: app.py
   FLASK_DEBUG: "0"
-  PLAID_ENV: sandbox # flip to "production" once real bank linking goes live
+  # "production" for real bank data; "sandbox" for fake test data. The
+  # matching PLAID_CLIENT_ID/PLAID_SECRET (per-environment) live in the Secret.
+  PLAID_ENV: production
   ALLOWED_ORIGIN: https://balancezero.tailbae83d.ts.net
+  # OAuth institutions (Capital One, Chase, ...) redirect the browser back
+  # here mid-Link. Must exactly match an "Allowed redirect URI" registered
+  # in the Plaid dashboard. Same host as ALLOWED_ORIGIN, path /accounts.
+  PLAID_REDIRECT_URI: https://balancezero.tailbae83d.ts.net/accounts
+  # Reverse-proxy hops in front of Flask (nginx, then the Tailscale
+  # ingress) so the login/signup rate limiter keys on the real tailnet
+  # client IP, not a proxy's. Start at 1; bump if two devices on the
+  # tailnet share a rate-limit bucket (verify after deploy).
+  TRUSTED_PROXY_COUNT: "1"

@@ -5,9 +5,72 @@ Self-hosted, private-tailnet-only deployment. The app is reachable at
 nowhere else — no Funnel, no public ingress.
 
 Current host: k3d (the real k3s distribution, run in Docker) on the
-development Mac — see `spec/self-hosted-deploy.md`'s Notes for why, and
-what changes (nothing in these manifests) when this moves to a dedicated
-Linux box later.
+development Mac. Moving to a small always-on Linux box (a cloud VM joined
+to the tailnet, then a home server) — see **Dedicated Linux host** below;
+the manifests are the same, only the cluster/image steps differ.
+
+## Dedicated Linux host (k3s on a VM)
+
+An interim step off the laptop: a tiny tailnet-joined VM (2 GB RAM /
+1 vCPU / 20 GB disk is enough — Hetzner CX22, a DO/Vultr/Linode 2 GB
+instance, or Oracle Cloud's always-free ARM). No public inbound ports —
+Tailscale dials out — so lock the provider firewall to deny all inbound
+(SSH over Tailscale too).
+
+1. **Tailscale on the VM**
+   ```sh
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up            # authenticate to the SAME tailnet as the OAuth client
+   ```
+
+2. **k3s (single node)**
+   ```sh
+   curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--secrets-encryption --write-kubeconfig-mode 644" sh -
+   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+   ```
+   `--secrets-encryption` is required, same reason as the k3d flag — this
+   cluster stores a real bank-access credential.
+
+3. **Free the MagicDNS name first.** Only one `balancezero` Ingress can
+   exist per tailnet. On the dev Mac: `kubectl delete -f deploy/k8s/ingress.yaml`
+   (or `k3d cluster delete balancezero`) *before* applying on the VM, or
+   the VM's Ingress registers as `balancezero-1.<tailnet>.ts.net` and
+   `ALLOWED_ORIGIN` / `PLAID_REDIRECT_URI` no longer match.
+
+4. **Images — no `k3d image import` here.** Either:
+   - build on the VM (needs Docker/buildkit) and
+     `docker save balancezero-backend balancezero-frontend | sudo k3s ctr images import -`, then re-run after each build; or
+   - push to a registry (e.g. `ghcr.io/<you>/balancezero-backend`), set
+     the two `image:` fields + `imagePullPolicy: Always`, add an
+     `imagePullSecrets` if the package is private.
+
+5. **Operator + secrets + deploy** — steps 4–6 of *One-time setup* below,
+   unchanged. In step 5 use the **Production** `PLAID_CLIENT_ID`/`SECRET`
+   (the ConfigMap now sets `PLAID_ENV: production` and
+   `PLAID_REDIRECT_URI`). Verify `PLAID_REDIRECT_URI` is a registered
+   "Allowed redirect URI" in the Plaid dashboard.
+
+6. **Carrying existing data (optional).** To keep the connections/history
+   already in your local `dev.sh` database:
+   ```sh
+   # from the dev machine
+   docker exec balancezero-dev-db-1 pg_dump -U balancezero_dev balancezero_dev > bz.sql
+   kubectl -n balancezero cp bz.sql "$(kubectl -n balancezero get pod -l app=postgres -o name | cut -d/ -f2):/tmp/bz.sql"
+   kubectl -n balancezero exec -it statefulset/postgres -- psql -U balancezero balancezero -f /tmp/bz.sql
+   ```
+   The stored Plaid tokens only decrypt with the **same
+   `PLAID_ENCRYPTION_KEY`** — put your dev key in the Secret, or expect
+   every user to re-link. (Rotate to a fresh key once the home server is
+   the real home.)
+
+7. **Verify** with `./scripts/verify-deploy.sh` (below), then hit the app
+   from another tailnet device and check the login/signup rate limiter
+   isn't keying every device to one bucket (adjust `TRUSTED_PROXY_COUNT`
+   in the ConfigMap if so).
+
+8. **Backups** aren't in these manifests yet — before real people rely on
+   it, add a `pg_dump` CronJob writing off-box, and keep
+   `PLAID_ENCRYPTION_KEY` backed up separately.
 
 ## One-time setup
 
