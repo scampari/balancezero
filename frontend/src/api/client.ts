@@ -53,6 +53,7 @@ export interface CategoryTarget {
 export interface BudgetCategory {
   id: number
   name: string
+  parent_id: number | null
   allocated_this_month: string
   available: string
   target: CategoryTarget | null
@@ -131,8 +132,14 @@ export async function markTransactionIncome(
   return res.json()
 }
 
-export async function createCategory(accessToken: string, name: string): Promise<{ id: number; name: string }> {
-  const res = await request('/categories', { method: 'POST', body: JSON.stringify({ name }) }, accessToken)
+export async function createCategory(
+  accessToken: string,
+  name: string,
+  parentId?: number | null,
+): Promise<{ id: number; name: string; parent_id: number | null }> {
+  const body: { name: string; parent_id?: number } = { name }
+  if (parentId != null) body.parent_id = parentId
+  const res = await request('/categories', { method: 'POST', body: JSON.stringify(body) }, accessToken)
   await throwIfError(res)
   return res.json()
 }
@@ -289,8 +296,9 @@ export function createCategoryWithAutoRefresh(
   accessToken: string,
   onTokenRefreshed: (token: string) => void,
   name: string,
-): Promise<{ id: number; name: string }> {
-  return withAutoRefresh((token) => createCategory(token, name), accessToken, onTokenRefreshed)
+  parentId?: number | null,
+): Promise<{ id: number; name: string; parent_id: number | null }> {
+  return withAutoRefresh((token) => createCategory(token, name, parentId), accessToken, onTokenRefreshed)
 }
 
 export function setAllocationWithAutoRefresh(
