@@ -103,19 +103,36 @@ echo "== 5. Secrets protected on the raw k3s datastore file (not just via kubect
 # regardless of this flag, so this check deliberately does NOT use
 # `kubectl get secret`. Uses `kubectl debug node` to inspect the host's
 # datastore file without needing separate SSH access.
+#
+# Positive assertion: count the aescbc encryption envelopes k3s writes
+# ("k8s:enc:aescbc:v1:<keyname>:" prefixes every stored Secret value and
+# every retained revision). An earlier version instead grepped the
+# datastore for the *plaintext* strings "PLAID_SECRET"/"plaid_access_...";
+# that needle was embedded in the debug pod's own command, which k3s then
+# persisted as a pod object in state.db, so the check matched its own probe
+# and every re-run piled up another false "plaintext hit". A healthy
+# encrypted cluster shows dozens of envelopes; the probe pod's own command
+# string contributes at most a handful of stray matches, hence the
+# threshold rather than a bare >0.
 NODE_NAME="${NODE_NAME:-$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)}"
+ENVELOPE_MIN="${ENVELOPE_MIN:-10}"
 if [ -z "$NODE_NAME" ]; then
   echo "SKIPPED — couldn't determine node name; set NODE_NAME to check secrets-at-rest."
 else
   # Default k3s embedded datastore path for single-node (SQLite, not etcd).
-  PLAINTEXT_HITS=$(kubectl debug "node/$NODE_NAME" -q -it --image=busybox --profile=general -- \
-    sh -c "strings /host/var/lib/rancher/k3s/server/db/state.db 2>/dev/null | grep -c 'PLAID_SECRET\|plaid_access_token_encrypted' || true" 2>/dev/null || echo "unknown")
-  if [ "$PLAINTEXT_HITS" = "unknown" ]; then
+  ENVELOPE_HITS=$(kubectl debug "node/$NODE_NAME" -q -it --image=busybox --profile=general -- \
+    sh -c "strings /host/var/lib/rancher/k3s/server/db/state.db 2>/dev/null | grep -c 'k8s:enc:aescbc:' || true" 2>/dev/null | tr -dc '0-9' || echo "")
+  # The debugger pod is not auto-removed; drop it so repeat runs don't pile up.
+  for p in $(kubectl get pod -n default -o name 2>/dev/null | grep node-debugger || true); do
+    kubectl delete "$p" -n default --wait=false >/dev/null 2>&1 || true
+  done
+
+  if [ -z "$ENVELOPE_HITS" ]; then
     echo "SKIPPED — couldn't inspect the node's datastore file (permissions or debug-pod support). Verify --secrets-encryption manually."
-  elif [ "$PLAINTEXT_HITS" != "0" ]; then
-    fail "found $PLAINTEXT_HITS plaintext hit(s) for secret-related strings in the raw datastore file — --secrets-encryption may not be enabled"
+  elif [ "$ENVELOPE_HITS" -lt "$ENVELOPE_MIN" ]; then
+    fail "only $ENVELOPE_HITS aescbc encryption envelope(s) in the raw datastore (expected >= $ENVELOPE_MIN) — --secrets-encryption may not be enabled"
   else
-    echo "OK — no plaintext secret strings found in the raw datastore file."
+    echo "OK — $ENVELOPE_HITS aescbc encryption envelopes in the datastore; secrets are encrypted at rest."
   fi
 fi
 

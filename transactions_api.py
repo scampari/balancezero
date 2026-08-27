@@ -20,6 +20,7 @@ def _serialize(transaction, category_name):
         "amount": str(transaction.amount),
         "description": transaction.description,
         "pending": transaction.pending,
+        "is_income": transaction.is_income,
     }
 
 
@@ -63,8 +64,16 @@ def list_transactions():
 @jwt_required()
 def patch_transaction(transaction_id):
     data = request.get_json(silent=True) or {}
-    if "category_id" not in data:
-        return jsonify({"error": "category_id is required (use null to uncategorize)"}), 400
+    has_category = "category_id" in data
+    has_is_income = "is_income" in data
+    if not has_category and not has_is_income:
+        return jsonify({"error": "category_id or is_income is required"}), 400
+
+    # is_income:true and a real category are mutually exclusive — reject only
+    # when the client asks for both in the same request. The implicit-clear
+    # cases (one field set, the other left to be cleared) resolve below.
+    if has_is_income and data.get("is_income") and has_category and data["category_id"] is not None:
+        return jsonify({"error": "is_income and a category are mutually exclusive"}), 400
 
     user_id = _current_user_id()
 
@@ -79,7 +88,17 @@ def patch_transaction(transaction_id):
     if transaction.account.user_id != user_id:
         return jsonify({"error": "forbidden"}), 403
 
-    category_id = data["category_id"]
+    category_id = transaction.category_id
+    is_income = transaction.is_income
+    if has_is_income:
+        is_income = bool(data.get("is_income"))
+        if is_income:
+            category_id = None  # marking "To Be Budgeted" clears any category
+    if has_category:
+        category_id = data["category_id"]
+        if category_id is not None:
+            is_income = False  # assigning a real category clears "To Be Budgeted"
+
     category_name = None
     if category_id is not None:
         category = db.session.get(Category, category_id)
@@ -90,6 +109,14 @@ def patch_transaction(transaction_id):
         category_name = category.name
 
     transaction.category_id = category_id
+    transaction.is_income = is_income
     db.session.commit()
 
-    return jsonify({"id": transaction.id, "category_id": category_id, "category_name": category_name}), 200
+    return jsonify(
+        {
+            "id": transaction.id,
+            "category_id": category_id,
+            "category_name": category_name,
+            "is_income": is_income,
+        }
+    ), 200
