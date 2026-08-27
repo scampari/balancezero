@@ -49,6 +49,12 @@ app.config["ALLOWED_ORIGIN"] = os.environ.get("ALLOWED_ORIGIN", "http://localhos
 # request to the ingress pod's IP. Default 0 = no proxy (local dev, tests):
 # request.remote_addr is the direct peer, unchanged from before.
 app.config["TRUSTED_PROXY_COUNT"] = int(os.environ.get("TRUSTED_PROXY_COUNT", "0"))
+# Max login / signup attempts per client IP per fixed window (15 min / 60 min).
+# Defaults are sane for a single-user app; raise them where many real users
+# share one egress IP, or for a test harness that hammers /login from
+# localhost (see frontend/playwright.config.ts).
+app.config["LOGIN_RATE_LIMIT_MAX"] = int(os.environ.get("LOGIN_RATE_LIMIT_MAX", "10"))
+app.config["SIGNUP_RATE_LIMIT_MAX"] = int(os.environ.get("SIGNUP_RATE_LIMIT_MAX", "5"))
 
 os.makedirs(app.instance_path, exist_ok=True)
 if app.config["TRUSTED_PROXY_COUNT"] > 0:

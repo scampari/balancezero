@@ -141,7 +141,7 @@ export function ConnectBankButton({
         className={
           connected
             ? 'rounded-md px-3 py-1.5 text-sm font-medium text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text) disabled:cursor-not-allowed disabled:opacity-60'
-            : 'rounded-md bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-(--color-bg) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60'
+            : 'rounded-md bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60'
         }
       >
         {busy ? 'Opening Plaid…' : label}

@@ -126,7 +126,11 @@ length the row resets.
   production deploy still applies and is unaffected by this slice.
 - **Rate limiting is deliberately coarse** — per-IP fixed window, no
   per-account lockout (avoids a lockout-as-DoS vector), no CAPTCHA. The
-  `AuthThrottle` table is 2 real columns keyed by `(scope, key)`.
+  `AuthThrottle` table is 2 real columns keyed by `(scope, key)`. The
+  window lengths are fixed (15 / 60 min); the max-attempt counts are
+  `LOGIN_RATE_LIMIT_MAX` / `SIGNUP_RATE_LIMIT_MAX` config (defaults 10 /
+  5) — raised in `frontend/playwright.config.ts` because the serial e2e
+  suite logs in from one IP many times per run.
 - **Client IP behind the proxy.** `context/tech-stack.md`'s deploy is
   k3s + a Tailscale ingress; `request.remote_addr` there is the ingress
   pod. `TRUSTED_PROXY_COUNT` (default `0`) gates

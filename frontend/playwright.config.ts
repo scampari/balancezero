@@ -36,6 +36,11 @@ export default defineConfig({
         PLAID_CLIENT_ID: 'test-placeholder-client-id',
         PLAID_SECRET: 'test-placeholder-secret',
         FLASK_DEBUG: '0',
+        // The whole serial suite hammers /login from 127.0.0.1; the
+        // production-default per-IP limits would trip mid-run. The 429
+        // behavior itself is covered by tests/test_signup.py.
+        LOGIN_RATE_LIMIT_MAX: '100000',
+        SIGNUP_RATE_LIMIT_MAX: '100000',
       },
     },
     {

@@ -97,7 +97,7 @@ export function AccountsPage() {
               type="button"
               onClick={runSync}
               disabled={isSyncing}
-              className="rounded-md bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-(--color-bg) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSyncing ? 'Syncing…' : 'Sync now'}
             </button>

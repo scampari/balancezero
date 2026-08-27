@@ -362,7 +362,7 @@ export function BudgetPage() {
               type="button"
               onClick={() => handleSaveTarget(category.id)}
               disabled={isSavingTarget || !targetAmount.trim()}
-              className="rounded-md bg-(--color-accent) px-3 py-1 text-xs font-medium text-(--color-bg) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md bg-(--color-accent) px-3 py-1 text-xs font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
             >
               Save
             </button>
@@ -467,7 +467,7 @@ export function BudgetPage() {
           <button
             type="submit"
             disabled={isCreatingCategory || !newCategoryName.trim()}
-            className="rounded-md bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-(--color-bg) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-md bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
           >
             Add
           </button>

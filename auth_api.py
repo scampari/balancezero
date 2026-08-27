@@ -14,11 +14,12 @@ REFRESH_TOKEN_TTL = timedelta(days=30)
 _MIN_PASSWORD_LEN = 10
 _MAX_PASSWORD_LEN = 128  # upper bound guards the hash cost against a huge input
 
-# (max attempts, window) per client IP — see spec/signup.md's rate-limiting
-# section. Both successful and failed attempts count; the point is to bound
-# brute force, not to lock accounts.
-_LOGIN_RATE_LIMIT = (10, timedelta(minutes=15))
-_SIGNUP_RATE_LIMIT = (5, timedelta(minutes=60))
+# Fixed windows per client IP — see spec/signup.md's rate-limiting section.
+# The max-attempt count is configurable (LOGIN_RATE_LIMIT_MAX /
+# SIGNUP_RATE_LIMIT_MAX in app.py); both successful and failed attempts count,
+# the point being to bound brute force, not to lock accounts.
+_LOGIN_RATE_WINDOW = timedelta(minutes=15)
+_SIGNUP_RATE_WINDOW = timedelta(minutes=60)
 
 auth_bp = Blueprint("auth_api", __name__, url_prefix="/api")
 
@@ -120,11 +121,10 @@ def _client_ip():
     return request.remote_addr or "unknown"
 
 
-def _rate_limit_ok(scope, limit):
+def _rate_limit_ok(scope, max_attempts, window):
     """Fixed-window counter per (scope, client-IP). Returns False when the
     caller is over the limit for the current window. Both successful and
     failed attempts are counted — see spec/signup.md."""
-    max_attempts, window = limit
     key = _client_ip()
     now = datetime.utcnow()
 
@@ -161,7 +161,7 @@ def _validate_invite_code(code):
 
 @auth_bp.route("/login", methods=["POST"])
 def login():
-    if not _rate_limit_ok("login", _LOGIN_RATE_LIMIT):
+    if not _rate_limit_ok("login", current_app.config["LOGIN_RATE_LIMIT_MAX"], _LOGIN_RATE_WINDOW):
         return jsonify({"error": "too many attempts — try again later"}), 429
 
     data = request.get_json(silent=True) or {}
@@ -184,7 +184,7 @@ def login():
 
 @auth_bp.route("/signup", methods=["POST"])
 def signup():
-    if not _rate_limit_ok("signup", _SIGNUP_RATE_LIMIT):
+    if not _rate_limit_ok("signup", current_app.config["SIGNUP_RATE_LIMIT_MAX"], _SIGNUP_RATE_WINDOW):
         return jsonify({"error": "too many attempts — try again later"}), 429
 
     data = request.get_json(silent=True) or {}
