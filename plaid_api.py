@@ -74,13 +74,20 @@ def create_link_token():
     if user is None:
         return jsonify({"error": "the demo account cannot connect a real bank"}), 403
 
-    request_body = LinkTokenCreateRequest(
+    link_token_args = dict(
         products=[Products("transactions")],
         client_name="BalanceZero",
         country_codes=[CountryCode("US")],
         language="en",
         user=LinkTokenCreateRequestUser(client_user_id=str(user.id)),
     )
+    # Only sent when configured — OAuth institutions require it, and Plaid
+    # rejects a redirect_uri that isn't registered in the dashboard, so an
+    # unset/misconfigured value must not be passed at all. See app.py.
+    redirect_uri = current_app.config.get("PLAID_REDIRECT_URI")
+    if redirect_uri:
+        link_token_args["redirect_uri"] = redirect_uri
+    request_body = LinkTokenCreateRequest(**link_token_args)
     try:
         response = _plaid_client().link_token_create(request_body)
     except Exception:

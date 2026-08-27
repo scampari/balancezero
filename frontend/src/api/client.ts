@@ -249,6 +249,28 @@ export async function getPlaidStatus(accessToken: string): Promise<{ connected: 
   return res.json()
 }
 
+// Step 1 of the Plaid Link flow: the backend mints a short-lived link_token
+// (its own server-to-server call to Plaid), which the browser hands to the
+// Plaid Link widget to open it.
+export async function createPlaidLinkToken(accessToken: string): Promise<{ link_token: string }> {
+  const res = await request('/plaid/link-token', { method: 'POST' }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
+// Step 2: after the user completes Link, the widget returns a public_token to
+// the browser; the backend exchanges it for the permanent (encrypted-at-rest)
+// access_token. The public_token is opaque and single-use — safe to send here.
+export async function connectPlaid(accessToken: string, publicToken: string): Promise<{ status: string }> {
+  const res = await request(
+    '/plaid/connect',
+    { method: 'POST', body: JSON.stringify({ public_token: publicToken }) },
+    accessToken,
+  )
+  await throwIfError(res)
+  return res.json()
+}
+
 /**
  * Wraps any authenticated call so an expired access token refreshes once and
  * retries — structurally capped at one retry (no recursion, no loop), unlike
@@ -383,4 +405,19 @@ export function getPlaidStatusWithAutoRefresh(
   onTokenRefreshed: (token: string) => void,
 ): Promise<{ connected: boolean }> {
   return withAutoRefresh((token) => getPlaidStatus(token), accessToken, onTokenRefreshed)
+}
+
+export function createPlaidLinkTokenWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+): Promise<{ link_token: string }> {
+  return withAutoRefresh((token) => createPlaidLinkToken(token), accessToken, onTokenRefreshed)
+}
+
+export function connectPlaidWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  publicToken: string,
+): Promise<{ status: string }> {
+  return withAutoRefresh((token) => connectPlaid(token, publicToken), accessToken, onTokenRefreshed)
 }

@@ -1,10 +1,16 @@
 import os
 from datetime import timedelta
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
+
+# Load a project-root .env before reading os.environ below. Only fills vars
+# that aren't already set, so an explicit `export` (dev.sh, CI, k8s Secret)
+# still wins. .env is gitignored — it's where local/prod secrets live.
+load_dotenv()
 
 from accounts_api import accounts_bp
 from auth_api import auth_bp, register_jwt_error_handlers
@@ -28,6 +34,13 @@ app.config["PLAID_SECRET"] = os.environ["PLAID_SECRET"]
 # choice, and this slice's tests/contract only cover Sandbox. Set to
 # "production" explicitly once real bank linking goes live.
 app.config["PLAID_ENV"] = os.environ.get("PLAID_ENV", "sandbox")
+# Required only for linking OAuth institutions (Chase, BofA, ...), which
+# redirect the browser back to the app mid-Link-flow. Must match, exactly
+# and minus query string, an "Allowed redirect URI" registered in the Plaid
+# dashboard (Team Settings → API). Unset = non-OAuth / Sandbox linking,
+# which completes entirely inside the Link widget with no redirect.
+# Prod value: https://balancezero.<tailnet>.ts.net/accounts
+app.config["PLAID_REDIRECT_URI"] = os.environ.get("PLAID_REDIRECT_URI")
 # Origin allowed to make credentialed cross-origin requests to /api/* (the React dev
 # server, and later the deployed frontend). Also used by auth_api's CSRF origin check.
 app.config["ALLOWED_ORIGIN"] = os.environ.get("ALLOWED_ORIGIN", "http://localhost:5173")

@@ -202,3 +202,37 @@ credentials set — it's not dead code, just not currently exercised.
   needed moving to `@requires_plaid_sandbox` during build, see Notes above.
   `app.py`, `conftest.py`, `dev.sh` updated for the new env vars
   (`PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENCRYPTION_KEY`).
+- 2026-08-27 — frontend Link flow wired (the piece flagged out-of-scope in
+  Notes). `react-plaid-link` added to `frontend/package.json`; `client.ts`
+  gains `createPlaidLinkToken` / `connectPlaid` (+ auto-refresh wrappers);
+  new `frontend/src/components/ConnectBankButton.tsx` runs the two-step
+  flow via `usePlaidLink`; `AccountsPage` shows "Connect a bank" (or
+  "Reconnect bank" once connected), gates "Sync now" on connection status
+  from `/api/plaid/status`, and auto-syncs after a successful connect.
+  Verified end-to-end against the running app: the button calls
+  `POST /api/plaid/link-token` and surfaces the backend's `403` for the
+  demo user inline. A real-bank Sandbox click-through still needs real
+  `PLAID_CLIENT_ID`/`PLAID_SECRET` in the environment.
+- 2026-08-27 — OAuth-institution redirect wired (some banks require it).
+  Backend: new optional `PLAID_REDIRECT_URI` config (`app.py`), passed to
+  `link_token_create` only when set (`plaid_api.py`) — Plaid rejects an
+  unregistered redirect_uri, so it must be omitted otherwise. Frontend:
+  `ConnectBankButton` parks the `link_token` in `localStorage` across the
+  full-page OAuth redirect (documented Plaid guidance; scoped to one key,
+  deleted on flow end — a deliberate, narrow exception to
+  `context/security-requirements.md`'s "no tokens in web storage", which
+  targets the JWT/refresh token, not the short-lived single-institution
+  `link_token`), then re-inits Link with `receivedRedirectUri` and
+  auto-opens when it lands back on `/accounts?oauth_state_id=...`. Also
+  added `python-dotenv` + `load_dotenv()` so a gitignored project-root
+  `.env` supplies these (`requirements.txt`, `app.py`, `dev.sh`).
+  Operator must register the redirect URI in the Plaid dashboard (Team
+  Settings → API → Allowed redirect URIs). Target is Production
+  (`PLAID_ENV=production`, Production `PLAID_SECRET`, Link use case set
+  under Data Transparency): redirect URI
+  `https://balancezero.<tailnet>.ts.net/accounts` — Production requires
+  `https://`, so a local production build needs a self-signed https origin
+  or must point at the deployed host. Sandbox would use
+  `http://localhost:5173/accounts`. Non-OAuth linking is unaffected when
+  `PLAID_REDIRECT_URI` is unset. Full backend suite green (128 passed, 9
+  Plaid-sandbox skips).
