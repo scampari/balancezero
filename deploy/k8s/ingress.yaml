@@ -1,0 +1,23 @@
+# Tailscale L7 Ingress — exposes the app ONLY on the tailnet, with
+# automatic HTTPS and the MagicDNS name balancezero.<tailnet>.ts.net.
+# No Funnel, no public ingress — the core security property of
+# spec/self-hosted-deploy.md.
+#
+# nginx (the frontend Service) is the single backend and does the
+# /api-vs-static path routing itself — see deploy/nginx.conf for why the
+# routing doesn't live in this Ingress.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: balancezero
+  namespace: balancezero
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - balancezero # MagicDNS name: balancezero.<tailnet>.ts.net
+  defaultBackend:
+    service:
+      name: frontend
+      port:
+        number: 80

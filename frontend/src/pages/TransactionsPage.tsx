@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   type Budget,
   type TransactionEntry,
@@ -8,6 +8,15 @@ import {
   patchTransactionCategoryWithAutoRefresh,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { AppShell, PageLoading } from '../components/AppShell'
+
+function formatMoney(value: string): string {
+  return Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+}
+
+function formatDate(value: string): string {
+  return new Date(`${value}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
 
 export function TransactionsPage() {
   const { accessToken, setAccessToken, isAuthChecked } = useAuth()
@@ -65,46 +74,71 @@ export function TransactionsPage() {
     )
   }
 
-  if (!transactions || !categories) return <p>Loading…</p>
+  if (!transactions || !categories) return <PageLoading />
 
   return (
-    <div>
-      <h1>Transactions</h1>
-      <nav>
-        <Link to="/budget">Budget</Link>
-      </nav>
-      <table>
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Description</th>
-            <th>Amount</th>
-            <th>Category</th>
-          </tr>
-        </thead>
-        <tbody>
-          {transactions.map((transaction) => (
-            <tr key={transaction.id}>
-              <td>{transaction.posted_at}</td>
-              <td>{transaction.description}</td>
-              <td>{transaction.amount}</td>
-              <td>
-                <select
-                  value={transaction.category_id ?? ''}
-                  onChange={(event) => handleCategoryChange(transaction.id, event.target.value)}
-                >
-                  <option value="">Uncategorized</option>
-                  {categories.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <AppShell>
+      <h1 className="mb-6 text-xl font-semibold tracking-tight text-(--color-text)">Transactions</h1>
+
+      {transactions.length === 0 ? (
+        <div className="rounded-xl border border-(--color-border) bg-(--color-surface) px-4 py-10 text-center text-sm text-(--color-text-faint)">
+          No transactions this month.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-(--color-border)">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-(--color-border) bg-(--color-surface)">
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Date</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Description</th>
+                <th className="px-4 py-2.5 text-right text-xs font-medium text-(--color-text-muted)">Amount</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Category</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-(--color-border)">
+              {transactions.map((transaction) => {
+                const amount = Number(transaction.amount)
+                return (
+                  <tr key={transaction.id} className="bg-(--color-surface) transition-colors hover:bg-(--color-surface-hover)">
+                    <td className="whitespace-nowrap px-4 py-3 text-(--color-text-muted)">
+                      {formatDate(transaction.posted_at)}
+                    </td>
+                    <td className="px-4 py-3 text-(--color-text)">
+                      {transaction.description}
+                      {transaction.pending && (
+                        <span className="ml-2 rounded-full border border-(--color-border) px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase">
+                          Pending
+                        </span>
+                      )}
+                    </td>
+                    <td
+                      className={`tabular-nums whitespace-nowrap px-4 py-3 text-right font-medium ${
+                        amount < 0 ? 'text-(--color-text)' : 'text-(--color-accent)'
+                      }`}
+                    >
+                      {formatMoney(transaction.amount)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <select
+                        value={transaction.category_id ?? ''}
+                        onChange={(event) => handleCategoryChange(transaction.id, event.target.value)}
+                        className="w-full max-w-40 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                      >
+                        <option value="">Uncategorized</option>
+                        {categories.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </AppShell>
   )
 }

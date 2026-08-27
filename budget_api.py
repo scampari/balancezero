@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, jsonify, request
@@ -7,9 +7,11 @@ from sqlalchemy.exc import IntegrityError
 
 from api_helpers import current_user_id as _current_user_id
 from api_helpers import parse_month as _parse_month
-from models import Account, BudgetAllocation, Category, Transaction, db
+from models import Account, BudgetAllocation, Category, CategoryTarget, Transaction, db
 
 budget_bp = Blueprint("budget_api", __name__, url_prefix="/api")
+
+TARGET_TYPES = ("monthly", "yearly", "custom")
 
 
 def _parse_amount(raw_amount):
@@ -20,6 +22,45 @@ def _parse_amount(raw_amount):
     if amount < 0:
         return None
     return amount
+
+
+def _parse_positive_amount(raw_amount):
+    amount = _parse_amount(raw_amount)
+    if amount is None or amount == 0:
+        return None
+    return amount
+
+
+def _parse_date(raw_date):
+    try:
+        return date.fromisoformat(raw_date)
+    except (TypeError, ValueError):
+        return None
+
+
+def _months_remaining(today, through_year, through_month):
+    return (through_year - today.year) * 12 + (through_month - today.month) + 1
+
+
+def _serialize_target(target):
+    if target.target_type == "monthly":
+        monthly_target_amount = target.target_amount
+    else:
+        today = date.today()
+        if target.target_type == "yearly":
+            months = _months_remaining(today, today.year, 12)
+        else:  # custom
+            months = _months_remaining(today, target.target_date.year, target.target_date.month)
+        monthly_target_amount = (target.target_amount / months).quantize(Decimal("0.01"))
+
+    return {
+        "id": target.id,
+        "category_id": target.category_id,
+        "target_type": target.target_type,
+        "target_amount": str(target.target_amount),
+        "target_date": target.target_date.isoformat() if target.target_date else None,
+        "monthly_target_amount": str(monthly_target_amount),
+    }
 
 
 def _get_owned_category(category_id):
@@ -42,7 +83,18 @@ def create_category():
     if not name:
         return jsonify({"error": "name is required"}), 400
 
-    category = Category(user_id=_current_user_id(), name=name)
+    parent_id = data.get("parent_id")
+    if parent_id is not None:
+        parent, error = _get_owned_category(parent_id)
+        if error:
+            return error
+        # Two levels only — a subcategory can't itself be a parent. Keeps
+        # the hierarchy simple (matches "categories and subcategories",
+        # not arbitrary nesting) and avoids needing cycle detection.
+        if parent.parent_id is not None:
+            return jsonify({"error": "a subcategory cannot itself have subcategories"}), 400
+
+    category = Category(user_id=_current_user_id(), name=name, parent_id=parent_id)
     db.session.add(category)
     try:
         db.session.commit()
@@ -50,7 +102,62 @@ def create_category():
         db.session.rollback()
         return jsonify({"error": "a category with this name already exists"}), 409
 
-    return jsonify({"id": category.id, "name": category.name}), 201
+    return jsonify({"id": category.id, "name": category.name, "parent_id": category.parent_id}), 201
+
+
+@budget_bp.route("/categories/<int:category_id>/target", methods=["POST"])
+@jwt_required()
+def set_target(category_id):
+    category, error = _get_owned_category(category_id)
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+
+    target_type = data.get("target_type")
+    if target_type not in TARGET_TYPES:
+        return jsonify({"error": "target_type must be one of monthly, yearly, custom"}), 400
+
+    amount = _parse_positive_amount(data.get("target_amount"))
+    if amount is None:
+        return jsonify({"error": "target_amount must be a positive decimal"}), 400
+
+    target_date = None
+    if target_type == "custom":
+        raw_date = data.get("target_date")
+        if raw_date is None:
+            return jsonify({"error": "target_date is required for a custom target"}), 400
+        target_date = _parse_date(raw_date)
+        if target_date is None:
+            return jsonify({"error": "target_date must be a valid ISO date"}), 400
+        current_month = date.today().replace(day=1)
+        if target_date.replace(day=1) <= current_month:
+            return jsonify({"error": "target_date must be after the current month"}), 400
+    elif data.get("target_date") is not None:
+        return jsonify({"error": "target_date is only valid for a custom target"}), 400
+
+    previous_active = CategoryTarget.query.filter_by(category_id=category.id, superseded_at=None).first()
+    if previous_active is not None:
+        previous_active.superseded_at = datetime.utcnow()
+
+    target = CategoryTarget(
+        category_id=category.id, target_type=target_type, target_amount=amount, target_date=target_date
+    )
+    db.session.add(target)
+    db.session.commit()
+
+    return jsonify(_serialize_target(target)), 201
+
+
+@budget_bp.route("/categories/<int:category_id>/target", methods=["GET"])
+@jwt_required()
+def get_target(category_id):
+    category, error = _get_owned_category(category_id)
+    if error:
+        return error
+
+    target = CategoryTarget.query.filter_by(category_id=category.id, superseded_at=None).first()
+    return jsonify({"target": _serialize_target(target) if target else None}), 200
 
 
 @budget_bp.route("/categories/<int:category_id>/allocations", methods=["POST"])
@@ -122,6 +229,7 @@ def get_budget():
             {
                 "id": cat.id,
                 "name": cat.name,
+                "parent_id": cat.parent_id,
                 "allocated_this_month": str(allocated_this_month),
                 "available": str(allocated_total + spent_total),
             }

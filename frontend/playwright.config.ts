@@ -8,6 +8,14 @@ export default defineConfig({
   testDir: './e2e',
   globalSetup: './e2e/global-setup.ts',
   fullyParallel: false, // small suite sharing one seeded database — keep it serial and simple
+  // fullyParallel only serializes tests WITHIN a file — without this,
+  // separate spec files still ran in different worker processes by
+  // default, racing each other's seed data against the one shared test-db
+  // (transactions.spec.ts's own beforeAll seeds more transactions for the
+  // same user login-and-budget.spec.ts asserts against). Found while
+  // verifying an unrelated UI change — a real pre-existing gap between
+  // this comment's stated intent and what the config actually enforced.
+  workers: 1,
   retries: 0,
   use: {
     baseURL: 'http://localhost:5173',

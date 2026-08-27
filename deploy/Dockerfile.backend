@@ -1,0 +1,20 @@
+# Backend image: Flask API under gunicorn.
+# Build from the repo root: docker build -f deploy/Dockerfile.backend -t balancezero-backend .
+FROM python:3.13-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt gunicorn
+
+# All root-level modules, not an enumerated list — an enumerated list goes
+# stale the moment a new module is added (found the hard way: this list
+# was missing accounts_api.py, which would have crashed the deployed
+# backend on import the next time this image got built).
+COPY *.py ./
+COPY migrations/ migrations/
+
+ENV FLASK_APP=app.py
+EXPOSE 5002
+
+CMD ["gunicorn", "--bind", "0.0.0.0:5002", "--workers", "2", "app:app"]

@@ -6,6 +6,7 @@ from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
 
+from accounts_api import accounts_bp
 from auth_api import auth_bp, register_jwt_error_handlers
 from budget_api import budget_bp
 from models import db
@@ -46,6 +47,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(budget_bp)
 app.register_blueprint(transactions_bp)
 app.register_blueprint(plaid_bp)
+app.register_blueprint(accounts_bp)
 
 
 @app.route("/api/health")

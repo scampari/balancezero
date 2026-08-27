@@ -13,11 +13,13 @@ application, rather than practice repos.
 
 Flask JSON API + React SPA with JWT auth, a working budget view, transaction
 categorization, and Plaid bank integration (Link-based connect + cursor-based
-transaction sync, both tested against Plaid's real Sandbox). Next up:
-self-hosted deployment on a k3s cluster reachable only over Tailscale. See
-`spec/` for what's built and `changes/` for the rationale behind each phase —
-including the deliberate pivots from SimpleFIN to Plaid and from AWS EKS to
-self-hosting (`changes/004-plaid-and-self-host/`).
+transaction sync, both tested against Plaid's real Sandbox). Deployed:
+self-hosted k3s cluster, reachable only over Tailscale at a private
+`*.ts.net` HTTPS hostname — see `deploy/` for manifests and the runbook,
+and `scripts/verify-deploy.sh` for the deploy's own verification contract.
+See `spec/` for what's built and `changes/` for the rationale behind each
+phase — including the deliberate pivots from SimpleFIN to Plaid and from
+AWS EKS to self-hosting (`changes/004-plaid-and-self-host/`).
 
 ## Design
 
@@ -39,8 +41,8 @@ behavior does and how it's tested).
   by design — see `context/plaid-integration.md`)
 - Postgres (dev and prod both use it — see `context/tech-stack.md`)
 - Docker, GitHub Actions CI/CD
-- Deploy target: self-hosted k3s over Tailscale, private tailnet only, no
-  public ingress (decided — see `context/tech-stack.md`), not yet built
+- Deploy: self-hosted k3s over Tailscale (Kubernetes operator, L7 Ingress),
+  private tailnet only, no public ingress — see `deploy/README.md`
 
 ## Local development
 

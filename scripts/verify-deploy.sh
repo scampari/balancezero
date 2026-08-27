@@ -20,6 +20,11 @@ set -euo pipefail
 TAILNET_HOSTNAME="${TAILNET_HOSTNAME:?Set TAILNET_HOSTNAME, e.g. balancezero.your-tailnet.ts.net}"
 NAMESPACE="${NAMESPACE:-balancezero}"
 POSTGRES_STATEFULSET="${POSTGRES_STATEFULSET:-postgres}"
+# Setup parameterization (was hardcoded to the local dev database's
+# balancezero_dev credentials — a setup bug, the deployed cluster uses
+# its own user/db): overridable, defaulting to deploy/k8s/postgres.yaml's.
+DB_USER="${DB_USER:-balancezero}"
+DB_NAME="${DB_NAME:-balancezero}"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -70,14 +75,22 @@ fi
 echo ""
 echo "== 4. Postgres data survives a pod restart =="
 MARKER_BEFORE=$(kubectl exec -n "$NAMESPACE" "$POSTGRES_STATEFULSET-0" -- \
-  psql -U balancezero_dev -d balancezero_dev -tAc "SELECT count(*) FROM \"user\" WHERE is_demo = true;" 2>/dev/null || true)
+  psql -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT count(*) FROM \"user\" WHERE is_demo = true;" 2>/dev/null || true)
 if [ "$MARKER_BEFORE" != "1" ]; then
   fail "expected exactly 1 demo user before restart (found: '$MARKER_BEFORE') — is the app seeded?"
 fi
 kubectl delete pod -n "$NAMESPACE" "$POSTGRES_STATEFULSET-0" >/dev/null
+# There's a window between the old pod vanishing and the StatefulSet
+# creating its replacement where `kubectl wait` errors NotFound instead of
+# waiting (hit in practice on the first real run) — poll until the new pod
+# object exists, then wait for Ready.
+for _ in $(seq 1 30); do
+  kubectl get pod -n "$NAMESPACE" "$POSTGRES_STATEFULSET-0" >/dev/null 2>&1 && break
+  sleep 2
+done
 kubectl wait --for=condition=Ready pod -n "$NAMESPACE" "$POSTGRES_STATEFULSET-0" --timeout=120s >/dev/null
 MARKER_AFTER=$(kubectl exec -n "$NAMESPACE" "$POSTGRES_STATEFULSET-0" -- \
-  psql -U balancezero_dev -d balancezero_dev -tAc "SELECT count(*) FROM \"user\" WHERE is_demo = true;" 2>/dev/null || true)
+  psql -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT count(*) FROM \"user\" WHERE is_demo = true;" 2>/dev/null || true)
 if [ "$MARKER_AFTER" != "1" ]; then
   fail "demo user missing after Postgres pod restart — data isn't persisting via the PVC (found: '$MARKER_AFTER')"
 fi
