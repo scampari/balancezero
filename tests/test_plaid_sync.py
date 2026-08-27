@@ -12,6 +12,7 @@ positive = inflow — the upsert must negate on every write.
 
 import os
 import time
+from datetime import date
 from decimal import Decimal
 
 import plaid
@@ -64,9 +65,21 @@ def _connect_with_dynamic_test_data(client, auth_headers):
     assert resp.status_code == 200, "test setup failed: real /connect call did not succeed"
 
 
-def _seed_item(user, plaid_item_id="seed-item", cursor=None, name="Seed Bank", import_cutoff=None):
+_ANCIENT_CUTOFF = date(2000, 1, 1)
+
+
+def _seed_item(
+    user,
+    plaid_item_id="seed-item",
+    cursor=None,
+    name="Seed Bank",
+    import_cutoff=_ANCIENT_CUTOFF,
+    created_at=None,
+):
     """A PlaidItem with a real-Fernet-encrypted fake token — for offline
-    tests that mock transactions_sync."""
+    tests that mock transactions_sync. import_cutoff defaults far in the
+    past so tests that aren't about the cutoff import their mock data
+    regardless of date."""
     fernet = Fernet(os.environ["PLAID_ENCRYPTION_KEY"])
     item = PlaidItem(
         user_id=user.id,
@@ -76,6 +89,8 @@ def _seed_item(user, plaid_item_id="seed-item", cursor=None, name="Seed Bank", i
         institution_name=name,
         import_cutoff=import_cutoff,
     )
+    if created_at is not None:
+        item.created_at = created_at
     db.session.add(item)
     db.session.commit()
     return item
@@ -377,26 +392,33 @@ def test_sync_skips_added_transactions_before_the_import_cutoff(client, test_use
     assert descriptions == {"NEW"}
 
 
-def test_sync_with_null_cutoff_imports_all_history(client, test_user, auth_headers, monkeypatch):
-    from datetime import date, timedelta
+def test_sync_null_cutoff_falls_back_to_the_items_creation_date(client, test_user, auth_headers, monkeypatch):
+    # changes/016: a NULL import_cutoff must NOT mean "import everything" —
+    # it falls back to created_at, so a fresh connection never pulls Plaid's
+    # full history window.
+    from datetime import datetime, timedelta
 
-    item = _seed_item(test_user, "item-nocutoff", import_cutoff=None)
+    connected = datetime.utcnow() - timedelta(days=5)
+    item = _seed_item(test_user, "item-nocutoff", import_cutoff=None, created_at=connected)
     account = Account(user_id=test_user.id, name="Checking", plaid_account_id="acc-1", plaid_item_id=item.id)
     db.session.add(account)
     db.session.commit()
 
-    long_ago = (date.today() - timedelta(days=200)).isoformat()
+    before = (connected - timedelta(days=60)).date().isoformat()
+    after = (connected + timedelta(days=1)).date().isoformat()
 
-    class _OldOnly:
+    class _MixedAges:
         def transactions_sync(self, *_a, **_k):
-            return _mock_sync_response(
-                added=[{"transaction_id": "old-1", "account_id": "acc-1", "amount": 5, "date": long_ago, "name": "OLD", "pending": False}]
-            )
+            return _mock_sync_response(added=[
+                {"transaction_id": "old-1", "account_id": "acc-1", "amount": 5, "date": before, "name": "OLD", "pending": False},
+                {"transaction_id": "new-1", "account_id": "acc-1", "amount": 7, "date": after, "name": "NEW", "pending": False},
+            ])
 
-    _patch_client(monkeypatch, _OldOnly())
+    _patch_client(monkeypatch, _MixedAges())
 
     response = client.post("/api/plaid/sync", headers=auth_headers)
     assert response.get_json()["totals"]["transactions_added"] == 1
+    assert {t.description for t in Transaction.query.filter_by(account_id=account.id).all()} == {"NEW"}
 
 
 # ---------------------------------------------------------------------------
@@ -547,3 +569,68 @@ def test_sync_does_not_recategorize_a_modified_transaction(client, test_user, au
 
     kept = Transaction.query.filter_by(account_id=account.id, plaid_transaction_id="existing").first()
     assert kept.category_id == dining.id  # user's choice untouched by the modify
+
+
+# ---------------------------------------------------------------------------
+# pending transactions are skipped until they post (changes/015)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_skips_pending_added_transactions(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-pending")
+    account = Account(user_id=test_user.id, name="Checking", plaid_account_id="acc-p", plaid_item_id=item.id)
+    db.session.add(account)
+    db.session.commit()
+
+    class _PendingAndPosted:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(added=[
+                {"transaction_id": "pend-1", "account_id": "acc-p", "amount": 5.0,
+                 "date": "2026-08-20", "name": "STILL PENDING", "pending": True},
+                {"transaction_id": "post-1", "account_id": "acc-p", "amount": 8.0,
+                 "date": "2026-08-21", "name": "SETTLED", "pending": False},
+            ])
+
+    _patch_client(monkeypatch, _PendingAndPosted())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.get_json()["totals"]["transactions_added"] == 1  # only the settled one
+
+    descriptions = {t.description for t in Transaction.query.filter_by(account_id=account.id).all()}
+    assert descriptions == {"SETTLED"}
+
+
+def test_sync_imports_the_transaction_once_it_settles(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-settle")
+    account = Account(user_id=test_user.id, name="Checking", plaid_account_id="acc-s", plaid_item_id=item.id)
+    db.session.add(account)
+    db.session.commit()
+
+    class _PendingThenPosted:
+        def __init__(self):
+            self.calls = 0
+
+        def transactions_sync(self, *_a, **_k):
+            self.calls += 1
+            if self.calls == 1:
+                return _mock_sync_response(added=[
+                    {"transaction_id": "t-1", "account_id": "acc-s", "amount": 12.0,
+                     "date": "2026-08-20", "name": "COFFEE", "pending": True},
+                ])
+            return _mock_sync_response(modified=[
+                {"transaction_id": "t-1", "account_id": "acc-s", "amount": 12.0,
+                 "date": "2026-08-20", "name": "COFFEE", "pending": False},
+            ])
+
+    _patch_client(monkeypatch, _PendingThenPosted())
+
+    first = client.post("/api/plaid/sync", headers=auth_headers)
+    assert first.get_json()["totals"]["transactions_added"] == 0  # pending, skipped
+    assert Transaction.query.filter_by(account_id=account.id).count() == 0
+
+    second = client.post("/api/plaid/sync", headers=auth_headers)
+    assert second.get_json()["totals"]["transactions_modified"] == 1  # now it settled
+    row = Transaction.query.filter_by(account_id=account.id).one()
+    assert row.description == "COFFEE"
+    assert row.pending is False

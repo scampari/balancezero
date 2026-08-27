@@ -251,7 +251,7 @@ def _add_starting_balance(account, plaid_item):
             account_id=account.id,
             category_id=None,
             plaid_transaction_id=None,  # synthetic, not from Plaid
-            posted_at=plaid_item.import_cutoff or date.today(),
+            posted_at=_import_cutoff(plaid_item),
             amount=account.balance,
             description="Starting Balance",
             pending=False,
@@ -311,17 +311,33 @@ _EMPTY_COUNTERS = {
 }
 
 
+def _import_cutoff(item):
+    """The earliest transaction date a sync will import for this item.
+    `import_cutoff` is set to the connect date on every new link; if it's
+    NULL — a row created before changes/011 added the column, or otherwise
+    missed — fall back to the item's own creation date rather than pulling
+    Plaid's entire ~90-day history window."""
+    return item.import_cutoff or item.created_at.date()
+
+
 def _within_import_window(plaid_transaction, item):
-    """A fresh connection ignores the historical backfill — only transactions
-    dated on/after item.import_cutoff are imported. Null cutoff (backfilled
-    rows) = import everything. Applies to `added` and `modified`; `removed`
-    is naturally a no-op for anything never imported."""
-    if item.import_cutoff is None:
-        return True
+    """A fresh connection ignores Plaid's historical backfill — only
+    transactions dated on/after the item's import cutoff are imported.
+    Applies to `added` and `modified`; `removed` is naturally a no-op for
+    anything never imported."""
     posted = plaid_transaction["date"]
     if isinstance(posted, str):
         posted = date.fromisoformat(posted)
-    return posted >= item.import_cutoff
+    return posted >= _import_cutoff(item)
+
+
+def _should_import(plaid_transaction, item):
+    """Gate for `added` / `modified` entries. Skips a transaction while
+    Plaid still marks it `pending` — it's pulled in only once it settles
+    (arrives again as non-pending, either as a `modified` on the same id or
+    a fresh `added` linked by `pending_transaction_id`). Also enforces the
+    fresh-connection import cutoff. See spec/plaid-sync.md."""
+    return not plaid_transaction["pending"] and _within_import_window(plaid_transaction, item)
 
 
 def _is_mutation_during_pagination(exception):
@@ -384,13 +400,13 @@ def _sync_one_item(user, item):
             return account_by_plaid_id[plaid_account_id]
 
         for plaid_transaction in response["added"]:
-            if not _within_import_window(plaid_transaction, item):
+            if not _should_import(plaid_transaction, item):
                 continue
             _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache)
             counters["transactions_added"] += 1
 
         for plaid_transaction in response["modified"]:
-            if not _within_import_window(plaid_transaction, item):
+            if not _should_import(plaid_transaction, item):
                 continue
             _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache)
             counters["transactions_modified"] += 1
