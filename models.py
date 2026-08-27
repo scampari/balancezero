@@ -99,6 +99,13 @@ class Transaction(db.Model):
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(255), nullable=False)
     pending = db.Column(db.Boolean, nullable=False, default=False)
+    # Explicit "To Be Budgeted" flag (005). Mutually exclusive with category_id
+    # — enforced in transactions_api.py on every write, not at the DB layer
+    # (same application-level approach as CategoryTarget's one-active-row rule).
+    # Feeds budget_api.py's ready_to_assign. Default false; existing rows are
+    # never backfilled — a one-time per-account "Starting Balance" transaction
+    # reconciles current bank balances instead (see spec/transactions.md's Notes).
+    is_income = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     __table_args__ = (

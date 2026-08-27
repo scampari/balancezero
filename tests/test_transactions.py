@@ -257,3 +257,167 @@ def test_patch_transaction_with_another_users_category_returns_403(client, test_
 
     # Assert
     assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# is_income / "To Be Budgeted" (005 — spec/transactions.md § GET + § PATCH)
+# ---------------------------------------------------------------------------
+
+
+def test_list_transactions_includes_is_income_false_for_normal_transaction(client, test_user, auth_headers):
+    # Arrange — a plain categorized transaction, nothing marked "To Be Budgeted"
+    account = _make_account(test_user.id)
+    category = _make_category(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "-12.00", "Normal", category_id=category.id)
+
+    # Act
+    response = client.get("/api/transactions", headers=auth_headers)
+
+    # Assert — response shape gained is_income, false for any categorized/normal row
+    assert response.status_code == 200
+    matching = next(t for t in response.get_json()["transactions"] if t["id"] == txn.id)
+    assert "is_income" in matching
+    assert matching["is_income"] is False
+
+
+def test_list_transactions_shows_is_income_true_for_tbb_transaction(client, test_user, auth_headers):
+    # Arrange — a transaction explicitly marked "To Be Budgeted"
+    account = _make_account(test_user.id)
+    txn = Transaction(
+        account_id=account.id,
+        category_id=None,
+        posted_at=CURRENT_MONTH,
+        amount=Decimal("1000.00"),
+        description="Paycheck",
+        is_income=True,
+    )
+    db.session.add(txn)
+    db.session.commit()
+
+    # Act
+    response = client.get("/api/transactions", headers=auth_headers)
+
+    # Assert
+    matching = next(t for t in response.get_json()["transactions"] if t["id"] == txn.id)
+    assert "is_income" in matching
+    assert matching["is_income"] is True
+    assert matching["category_id"] is None
+
+
+def test_patch_transaction_marks_is_income_true(client, test_user, auth_headers):
+    # Arrange
+    account = _make_account(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "1000.00", "Paycheck")
+
+    # Act
+    response = client.patch(
+        f"/api/transactions/{txn.id}",
+        json={"is_income": True, "category_id": None},
+        headers=auth_headers,
+    )
+
+    # Assert
+    assert response.status_code == 200
+    body = response.get_json()
+    assert "is_income" in body
+    assert body["is_income"] is True
+    assert body["category_id"] is None
+    assert body["category_name"] is None
+
+    # Assert side effect
+    db.session.refresh(txn)
+    assert txn.is_income is True
+    assert txn.category_id is None
+
+
+def test_patch_is_income_true_clears_existing_category(client, test_user, auth_headers):
+    # Arrange — a transaction that already has a category assigned
+    account = _make_account(test_user.id)
+    category = _make_category(test_user.id, name="Dining")
+    txn = _make_transaction(account.id, CURRENT_MONTH, "-30.00", "Was dining", category_id=category.id)
+
+    # Act — mark it "To Be Budgeted"
+    response = client.patch(
+        f"/api/transactions/{txn.id}",
+        json={"is_income": True, "category_id": None},
+        headers=auth_headers,
+    )
+
+    # Assert — setting is_income:true implicitly clears category_id
+    assert response.status_code == 200
+    body = response.get_json()
+    assert "is_income" in body
+    assert body["is_income"] is True
+    assert body["category_id"] is None
+    db.session.refresh(txn)
+    assert txn.is_income is True
+    assert txn.category_id is None
+
+
+def test_patch_assigning_category_clears_is_income(client, test_user, auth_headers):
+    # Arrange — a transaction already marked "To Be Budgeted"
+    account = _make_account(test_user.id)
+    category = _make_category(test_user.id, name="Dining")
+    txn = Transaction(
+        account_id=account.id,
+        category_id=None,
+        posted_at=CURRENT_MONTH,
+        amount=Decimal("1000.00"),
+        description="Paycheck",
+        is_income=True,
+    )
+    db.session.add(txn)
+    db.session.commit()
+
+    # Act — assign a real category
+    response = client.patch(
+        f"/api/transactions/{txn.id}", json={"category_id": category.id}, headers=auth_headers
+    )
+
+    # Assert — setting a non-null category_id implicitly clears is_income
+    assert response.status_code == 200
+    body = response.get_json()
+    assert "is_income" in body
+    assert body["category_id"] == category.id
+    assert body["is_income"] is False
+    db.session.refresh(txn)
+    assert txn.category_id == category.id
+    assert txn.is_income is False
+
+
+def test_patch_is_income_true_with_nonnull_category_returns_400(client, test_user, auth_headers):
+    # Arrange
+    account = _make_account(test_user.id)
+    category = _make_category(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "-20.00", "Something")
+
+    # Act — is_income:true together with a non-null category_id is mutually exclusive
+    response = client.patch(
+        f"/api/transactions/{txn.id}",
+        json={"is_income": True, "category_id": category.id},
+        headers=auth_headers,
+    )
+
+    # Assert
+    assert response.status_code == 400
+    db.session.refresh(txn)
+    assert txn.is_income is False
+    assert txn.category_id is None
+
+
+def test_patch_assign_category_response_includes_is_income(client, test_user, auth_headers):
+    # Arrange
+    account = _make_account(test_user.id)
+    category = _make_category(test_user.id, name="Dining")
+    txn = _make_transaction(account.id, CURRENT_MONTH, "-20.00", "Restaurant")
+
+    # Act
+    response = client.patch(
+        f"/api/transactions/{txn.id}", json={"category_id": category.id}, headers=auth_headers
+    )
+
+    # Assert — PATCH response shape gained is_income
+    assert response.status_code == 200
+    body = response.get_json()
+    assert "is_income" in body
+    assert body["is_income"] is False

@@ -153,10 +153,16 @@ no budget-math change based on hierarchy).
 
 20 of 22 new tests confirmed red (404, no route) before commit; the 2 nonexistent-category tests pass pre-implementation for the same reason documented above.
 
-No test exists yet for the `ready_to_assign`/`is_income` change to § GET /api/budget, or for `spec/transactions.md`'s `is_income` toggle — second slice, test-writer will produce these when that slice is built.
+- `tests/test_budget_api.py` § `"test_get_budget_ready_to_assign_counts_is_income_minus_allocations"` — covers § GET /api/budget: `ready_to_assign` = `SUM(Transaction.amount WHERE is_income) − SUM(BudgetAllocation.allocated_amount)`.
+- `tests/test_budget_api.py` § `"test_get_budget_ready_to_assign_excludes_plain_uncategorized_inflow"` — covers § GET /api/budget: an uncategorized inflow *not* marked `is_income` no longer counts toward `ready_to_assign` (the semantic change from the old uncategorized-inflow formula).
+- `tests/test_budget_api.py` § `"test_get_budget_category_without_target_has_null_target"` — covers § GET /api/budget: per-category `target` is `null` when no active target exists.
+- `tests/test_budget_api.py` § `"test_get_budget_category_with_active_target_includes_target_shape"` — covers § GET /api/budget: per-category `target` carries `target_type`/`target_amount`/`target_date`/`monthly_target_amount` when an active target exists.
+
+4 new tests confirmed red before commit — the old formula returns `1350`/`500` where the new one expects `850`/`0`, and `target` is absent from the per-category shape. The paired `is_income` toggle tests for `spec/transactions.md` live in `tests/test_transactions.py` (see that spec's Tests section).
 
 ## Changes
 - 001 (2026-08-10) — initial contract, second slice of `changes/001-api-spa-rewrite/plan.md`.
 - 001 (2026-08-10) — built. New `budget_api.py` blueprint; old server-rendered routes, templates, and flask_wtf removed. All 19 tests green (36 total with auth.md's suite, no regressions).
 - 005 (2026-08-26) — added § POST/GET /api/categories/<id>/target (category budget targets: monthly/yearly/custom, superseded-not-deleted history) and changed `ready_to_assign` to read `Transaction.is_income` instead of implicit uncategorized-inflow. Second half of `changes/005-budget-targets-and-tbb/plan.md`, paired with `spec/transactions.md`'s `is_income` toggle. Not yet built.
 - 005 (2026-08-26) — § POST/GET /api/categories/<id>/target built. New `CategoryTarget` model + migration (`e6875d83ae67`); `budget_api.py` gains `set_target`/`get_target`. All 22 target tests green, 92/92 full suite (9 skipped — Plaid sandbox tests requiring real credentials). `ready_to_assign`/`is_income` half of this slice (second half, paired with `spec/transactions.md`) not yet built — status stays `in-progress`.
+- 005 (2026-08-26) — `ready_to_assign`/`is_income` + budget-view `target` tests locked: 4 tests in `tests/test_budget_api.py`, all confirmed red. Depends on `spec/transactions.md`'s new `Transaction.is_income` column + migration `a1b2c3d4e5f6` (added with that spec's test commit). No `get_budget` logic changed — `ready_to_assign` still uses the old uncategorized-inflow formula and the per-category shape still omits `target`; the build closes both. Status stays `in-progress`.

@@ -697,3 +697,136 @@ def test_get_target_on_another_users_category_returns_403(client, test_user, aut
 
     # Assert
     assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET /api/budget — ready_to_assign now reads is_income (005)
+# ---------------------------------------------------------------------------
+
+
+def _make_account_with_income(user_id, is_income_amount, plain_uncategorized_amount=None):
+    """Arrange helper — one account, one is_income transaction, optionally one
+    plain uncategorized (non-income) transaction. Kept local (not a shared
+    fixture) so this test file stays self-contained, matching the existing
+    local-import style for CategoryTarget above."""
+    from decimal import Decimal
+
+    from models import Account, Transaction
+
+    account = Account(user_id=user_id, name="Checking")
+    db.session.add(account)
+    db.session.commit()
+
+    db.session.add(
+        Transaction(
+            account_id=account.id,
+            category_id=None,
+            posted_at=date.today().replace(day=1),
+            amount=Decimal(is_income_amount),
+            description="Paycheck",
+            is_income=True,
+        )
+    )
+    if plain_uncategorized_amount is not None:
+        db.session.add(
+            Transaction(
+                account_id=account.id,
+                category_id=None,
+                posted_at=date.today().replace(day=1),
+                amount=Decimal(plain_uncategorized_amount),
+                description="Unreviewed inflow",
+                is_income=False,
+            )
+        )
+    db.session.commit()
+    return account
+
+
+def test_get_budget_ready_to_assign_counts_is_income_minus_allocations(client, test_user, auth_headers):
+    # Arrange — 1000 marked is_income, 500 plain uncategorized inflow, 150 allocated.
+    # New formula: SUM(is_income) - SUM(allocated) = 1000 - 150 = 850.
+    # (Old "uncategorized inflow" formula would have given 1500 - 150 = 1350.)
+    from decimal import Decimal
+
+    _make_account_with_income(test_user.id, "1000.00", plain_uncategorized_amount="500.00")
+    category_id = _create_category(client, auth_headers, name="Groceries").get_json()["id"]
+    client.post(
+        f"/api/categories/{category_id}/allocations",
+        json={"month": CURRENT_MONTH, "amount": "150.00"},
+        headers=auth_headers,
+    )
+
+    # Act
+    response = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers)
+
+    # Assert
+    assert response.status_code == 200
+    assert Decimal(response.get_json()["ready_to_assign"]) == Decimal("850.00")
+
+
+def test_get_budget_ready_to_assign_excludes_plain_uncategorized_inflow(client, test_user, auth_headers):
+    # Arrange — a single uncategorized inflow that is NOT marked is_income, no allocations.
+    # New formula counts only is_income, so ready_to_assign is 0 (old formula gave 500).
+    from decimal import Decimal
+
+    from models import Account, Transaction
+
+    account = Account(user_id=test_user.id, name="Checking")
+    db.session.add(account)
+    db.session.commit()
+    db.session.add(
+        Transaction(
+            account_id=account.id,
+            category_id=None,
+            posted_at=date.today().replace(day=1),
+            amount=Decimal("500.00"),
+            description="Unreviewed inflow",
+            is_income=False,
+        )
+    )
+    db.session.commit()
+
+    # Act
+    response = client.get("/api/budget", headers=auth_headers)
+
+    # Assert
+    assert response.status_code == 200
+    assert Decimal(response.get_json()["ready_to_assign"]) == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/budget — per-category shape gains target (005)
+# ---------------------------------------------------------------------------
+
+
+def test_get_budget_category_without_target_has_null_target(client, test_user, auth_headers):
+    # Arrange
+    category_id = _create_category(client, auth_headers, name="Groceries").get_json()["id"]
+
+    # Act
+    response = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers)
+
+    # Assert
+    assert response.status_code == 200
+    entry = next(c for c in response.get_json()["categories"] if c["id"] == category_id)
+    assert "target" in entry
+    assert entry["target"] is None
+
+
+def test_get_budget_category_with_active_target_includes_target_shape(client, test_user, auth_headers):
+    # Arrange — a monthly target on the category
+    category_id = _create_category(client, auth_headers, name="Groceries").get_json()["id"]
+    _set_target(client, auth_headers, category_id, "monthly", "200.00")
+
+    # Act
+    response = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers)
+
+    # Assert
+    assert response.status_code == 200
+    entry = next(c for c in response.get_json()["categories"] if c["id"] == category_id)
+    assert "target" in entry
+    assert entry["target"] is not None
+    assert entry["target"]["target_type"] == "monthly"
+    assert entry["target"]["target_amount"] == "200.00"
+    assert entry["target"]["target_date"] is None
+    assert entry["target"]["monthly_target_amount"] == "200.00"
