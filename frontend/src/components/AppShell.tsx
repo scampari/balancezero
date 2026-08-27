@@ -2,6 +2,7 @@ import { type ReactNode } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { logout } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { ThemePicker } from './ThemePicker'
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
@@ -35,10 +36,16 @@ export function AppShell({ children }: { children: ReactNode }) {
             <NavLink to="/accounts" className={navLinkClass}>
               Accounts
             </NavLink>
+            <NavLink to="/reports" className={navLinkClass}>
+              Reports
+            </NavLink>
+            <span className="ml-2">
+              <ThemePicker />
+            </span>
             <button
               type="button"
               onClick={handleLogout}
-              className="ml-2 rounded-md px-3 py-1.5 text-sm font-medium text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text)"
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text)"
             >
               Log out
             </button>

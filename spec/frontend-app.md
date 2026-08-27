@@ -67,6 +67,32 @@ Tests are Playwright e2e tests driving a real browser against the real Flask bac
 
 All 4 confirmed red before commit — no login form or routing exists yet. The e2e harness itself (Docker test-db reset via `seed_e2e.py`, real Flask server, real Vite dev server via proxy, real Chromium browser) is fully working; only the React app is missing.
 
+## Theme selection (changes/010)
+
+The app ships several themes, chosen from a `<select aria-label="Theme">` in
+the `AppShell` header:
+
+- **Options:** `System` (default), `Light`, `Dark`, `Dark dim`, `Dark ocean`.
+  `System` follows the OS `prefers-color-scheme` live (tracks changes while
+  selected). The default dark palette is a calm, low-saturation indigo —
+  replacing the original high-saturation emerald.
+- **Persistence:** the raw choice is saved to `localStorage['bz.theme']` and
+  reapplied on next load. A `<head>` script in `index.html` sets
+  `data-theme` + `color-scheme` on `<html>` before first paint (no flash);
+  `frontend/src/theme/ThemeContext.tsx` takes over once React mounts.
+  `localStorage` is appropriate here — a theme is a display preference, not a
+  credential (contrast the access-token rule in
+  `context/security-requirements.md`).
+- **Light mode is real** — every component reads `--color-*` tokens, and
+  `index.css` defines a full light palette (including `--color-on-accent`
+  for text on accent fills, and higher-alpha `--color-accent-bg` /
+  `--color-accent-border` so tints and focus rings stay visible on white).
+  `color-scheme: light` is set so native controls match.
+- **Not asserted by e2e:** exact colors. `frontend/e2e/theme.spec.ts`
+  checks the picker exists, that choosing Light sets
+  `html[data-theme="light"]` and survives a reload, and that `System`
+  tracks `emulateMedia({ colorScheme })`.
+
 ## Changes
 - 001 (2026-08-10) — initial contract, third slice of `changes/001-api-spa-rewrite/plan.md`.
 - 001 (2026-08-10) — built. Real React app (api client, auth context, login/budget pages, router). All 4 e2e tests green against the real Flask backend and real browser. Full backend suite (36 tests) unaffected.

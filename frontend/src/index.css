@@ -3,28 +3,113 @@
 @theme {
   --font-sans: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
 
-  /* Neutral slate scale — dark-first. A money app should feel calm and
-     legible, not trendy; restraint over decoration. */
-  --color-bg: #0b0d10;
-  --color-surface: #14171b;
-  --color-surface-hover: #1a1e23;
-  --color-border: #262b31;
-  --color-text: #e6e8eb;
-  --color-text-muted: #8b93a1;
-  --color-text-faint: #5b6270;
+  /* Default theme — a calm, low-saturation dark. A money app should feel
+     steady and legible, not neon. Every component reads these `--color-*`
+     tokens through Tailwind's `bg-(--color-x)` syntax, so a theme is just
+     a different set of values for the same names (see the
+     `html[data-theme=...]` blocks below and src/theme/). */
+  --color-bg: #0e1013;
+  --color-surface: #16191e;
+  --color-surface-hover: #1c2027;
+  --color-border: #2a2f38;
+  --color-text: #e7e9ec;
+  --color-text-muted: #99a1ad;
+  --color-text-faint: #626b78;
 
-  /* Single accent — emerald, reserved for primary actions and positive
-     money (matches the zero-based-budgeting "money available" concept). */
-  --color-accent: #34d399;
-  --color-accent-hover: #6ee7b7;
-  --color-accent-bg: rgba(52, 211, 153, 0.1);
-  --color-accent-border: rgba(52, 211, 153, 0.35);
+  /* Single accent — a soft indigo, reserved for primary actions and
+     positive money. */
+  --color-accent: #8b9cf7;
+  --color-accent-hover: #a6b3fa;
+  --color-accent-bg: rgba(139, 156, 247, 0.14);
+  --color-accent-border: rgba(139, 156, 247, 0.4);
+  /* Text/icon color that sits on a `--color-accent` fill. Per-theme, because
+     the right choice flips between light and dark themes. */
+  --color-on-accent: #0e1013;
 
-  --color-negative: #f87171;
+  --color-negative: #f28585;
+}
+
+/* ---- Runtime theme overrides -------------------------------------------
+   Written to <html data-theme="..."> by src/theme/ThemeContext (and by the
+   pre-paint script in index.html, to avoid a flash). `html[data-theme]`
+   has higher specificity than the `:root` block Tailwind emits from
+   `@theme`, so these win regardless of source order. Each block redefines
+   every token and sets `color-scheme` for native controls. */
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --color-bg: #0e1013;
+  --color-surface: #16191e;
+  --color-surface-hover: #1c2027;
+  --color-border: #2a2f38;
+  --color-text: #e7e9ec;
+  --color-text-muted: #99a1ad;
+  --color-text-faint: #626b78;
+  --color-accent: #8b9cf7;
+  --color-accent-hover: #a6b3fa;
+  --color-accent-bg: rgba(139, 156, 247, 0.14);
+  --color-accent-border: rgba(139, 156, 247, 0.4);
+  --color-on-accent: #0e1013;
+  --color-negative: #f28585;
+}
+
+html[data-theme='dark-dim'] {
+  color-scheme: dark;
+  --color-bg: #17181c;
+  --color-surface: #1f2126;
+  --color-surface-hover: #26282e;
+  --color-border: #33363d;
+  --color-text: #d6d8dc;
+  --color-text-muted: #91949c;
+  --color-text-faint: #61646c;
+  --color-accent: #7fb8a4;
+  --color-accent-hover: #97cdb9;
+  --color-accent-bg: rgba(127, 184, 164, 0.15);
+  --color-accent-border: rgba(127, 184, 164, 0.4);
+  --color-on-accent: #16171a;
+  --color-negative: #e08585;
+}
+
+html[data-theme='dark-ocean'] {
+  color-scheme: dark;
+  --color-bg: #0b1220;
+  --color-surface: #121b2e;
+  --color-surface-hover: #172236;
+  --color-border: #24324a;
+  --color-text: #e2e8f2;
+  --color-text-muted: #93a1b8;
+  --color-text-faint: #5d6b82;
+  --color-accent: #56b6e6;
+  --color-accent-hover: #7cc8ee;
+  --color-accent-bg: rgba(86, 182, 230, 0.15);
+  --color-accent-border: rgba(86, 182, 230, 0.42);
+  --color-on-accent: #08111f;
+  --color-negative: #f0806f;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #fbfbfa;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f2f3f5;
+  --color-border: #e3e5e9;
+  --color-text: #1c2024;
+  --color-text-muted: #5c636e;
+  --color-text-faint: #8b929d;
+  /* Deeper indigo — the dark themes' light accent would wash out on white. */
+  --color-accent: #4f5bd5;
+  --color-accent-hover: #3f4ac0;
+  /* Alpha bumped up: 0.14 is invisible on a white surface. */
+  --color-accent-bg: rgba(79, 91, 213, 0.1);
+  --color-accent-border: rgba(79, 91, 213, 0.32);
+  --color-on-accent: #ffffff;
+  --color-negative: #d64545;
 }
 
 @layer base {
   html {
+    /* Pre-JS fallback only — the pre-paint script and ThemeContext set the
+       real value (and data-theme) before/at first paint. */
     color-scheme: dark;
   }
 

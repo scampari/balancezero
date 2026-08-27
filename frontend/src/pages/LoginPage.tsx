@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { login } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
@@ -71,13 +71,17 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full rounded-md bg-(--color-accent) px-3 py-2 text-sm font-medium text-(--color-bg) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full rounded-md bg-(--color-accent) px-3 py-2 text-sm font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isSubmitting ? 'Logging in…' : 'Log in'}
           </button>
         </form>
 
         <p className="mt-6 text-center text-xs text-(--color-text-faint)">
+          Have an invite?{' '}
+          <Link to="/signup" className="text-(--color-text-muted) hover:text-(--color-text)">Create an account</Link>
+        </p>
+        <p className="mt-2 text-center text-xs text-(--color-text-faint)">
           Try the demo account — <span className="text-(--color-text-muted)">demo</span> /{' '}
           <span className="text-(--color-text-muted)">demo-pw</span>
         </p>

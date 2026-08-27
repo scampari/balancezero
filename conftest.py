@@ -17,10 +17,11 @@ os.environ.setdefault("PLAID_CLIENT_ID", "test-placeholder-client-id")
 os.environ.setdefault("PLAID_SECRET", "test-placeholder-secret")
 
 import pytest
+from cryptography.fernet import Fernet
 from werkzeug.security import generate_password_hash
 
 from app import app as flask_app, db
-from models import User
+from models import InviteCode, PlaidItem, User
 
 TEST_USERNAME = "sam"
 TEST_PASSWORD = "correct horse battery staple"
@@ -77,3 +78,31 @@ def demo_user(client):
 def demo_auth_headers(client, demo_user):
     response = client.post("/api/login", json={"username": DEMO_USERNAME, "password": DEMO_PASSWORD})
     return {"Authorization": f"Bearer {response.get_json()['access_token']}"}
+
+
+INVITE_CODE = "test-invite-code"
+
+
+@pytest.fixture()
+def invite_code(client):
+    code = InviteCode(code=INVITE_CODE)
+    db.session.add(code)
+    db.session.commit()
+    return code
+
+
+@pytest.fixture()
+def plaid_item(client, test_user):
+    """A linked institution for `test_user` with a real-Fernet-encrypted
+    (but fake) access token — for tests that need "already connected" state
+    without a live Plaid Sandbox call."""
+    fernet = Fernet(os.environ["PLAID_ENCRYPTION_KEY"])
+    item = PlaidItem(
+        user_id=test_user.id,
+        plaid_item_id="test-item-id",
+        access_token_encrypted=fernet.encrypt(b"access-sandbox-fake"),
+        institution_name="First Platypus Bank",
+    )
+    db.session.add(item)
+    db.session.commit()
+    return item

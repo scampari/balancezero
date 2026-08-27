@@ -6,6 +6,20 @@ for the full interrogation). Not yet implemented; re-verify details below
 against current Plaid docs before implementing, same discipline that caught
 the previous provider's doc drift.
 
+> **Update — `changes/008` (2026-08-27): multi-institution.** The
+> single-institution-per-user scope below was deliberately reversed at the
+> user's request. A user now has many `PlaidItem` rows (1:many); each holds
+> one institution's encrypted `access_token`, its own `sync_cursor`, and
+> `institution_name`/`institution_id`. `Account.plaid_item_id` FK
+> (`ON DELETE SET NULL`) ties an account to its institution. The three
+> scalar `User.plaid_*` columns are gone (migration `035d62499d87`
+> backfilled one `PlaidItem` per existing connection). `/sync` loops every
+> item with per-item cursor + partial-failure handling. The demo guarantee
+> is unaffected — the demo user has no `plaid_items`. The "Cardinality",
+> "Storage", and "Sync cursor scope" bullets below are superseded by this;
+> everything else (sign convention, polling-only, no webhooks, rate limits,
+> no SSRF surface) still stands.
+
 - **SIGN CONVENTION IS FLIPPED FROM SIMPLEFIN'S — verified against Plaid's
   docs during `plaid-sync.md` test-writing, 2026-08-26.** Plaid: positive
   `amount` = money **leaving** the account (debit/outflow); negative =

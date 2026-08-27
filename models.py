@@ -9,20 +9,20 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
+    # Optional — captured at signup when supplied, unused beyond storage for
+    # now. Groundwork for a future password-reset slice so it needs no second
+    # migration. Username stays the sole login identifier.
+    email = db.Column(db.String(255), unique=True, nullable=True)
     is_demo = db.Column(db.Boolean, nullable=False, default=False)
-    # Fernet ciphertext — null for the demo user, which has no real bank connection.
-    # Plaid's access_token, not a full URL (unlike the SimpleFIN-era column this replaces).
-    plaid_access_token_encrypted = db.Column(db.LargeBinary, nullable=True)
-    # Plaid's Item identifier — not a secret, stored plaintext alongside the encrypted token.
-    plaid_item_id = db.Column(db.String(120), nullable=True)
-    # /transactions/sync cursor — Item-scoped (covers every account under it),
-    # not per-account; null means "never synced." See spec/plaid-sync.md's Notes.
-    plaid_sync_cursor = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     accounts = db.relationship("Account", backref="user", cascade="all, delete-orphan")
     categories = db.relationship("Category", backref="user", cascade="all, delete-orphan")
     refresh_tokens = db.relationship("RefreshToken", backref="user", cascade="all, delete-orphan")
+    # One row per linked institution (Plaid "Item"). Replaces the former
+    # scalar plaid_* columns on User — see changes/008 and
+    # context/plaid-integration.md. The demo user simply has none.
+    plaid_items = db.relationship("PlaidItem", backref="user", cascade="all, delete-orphan")
 
 
 class Account(db.Model):
@@ -30,6 +30,12 @@ class Account(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     # Null for synthetic demo-user accounts, which have no corresponding Plaid account.
     plaid_account_id = db.Column(db.String(120), nullable=True)
+    # Which linked institution this account came from. Null for demo/manual
+    # accounts, and for accounts whose PlaidItem was unlinked (ON DELETE SET
+    # NULL — the account + its transactions are kept, see changes/008).
+    plaid_item_id = db.Column(
+        db.Integer, db.ForeignKey("plaid_item.id", ondelete="SET NULL"), nullable=True
+    )
     name = db.Column(db.String(120), nullable=False)
     currency = db.Column(db.String(3), nullable=False, default="USD")
     balance = db.Column(db.Numeric(12, 2), nullable=False, default=0)
@@ -38,8 +44,38 @@ class Account(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     transactions = db.relationship("Transaction", backref="account", cascade="all, delete-orphan")
+    plaid_item = db.relationship("PlaidItem", backref="accounts")
 
     __table_args__ = (db.UniqueConstraint("user_id", "plaid_account_id", name="uq_account_user_plaid_id"),)
+
+
+class PlaidItem(db.Model):
+    """One linked institution ("Item" in Plaid's vocabulary). Holds that
+    institution's encrypted access_token and its own /transactions/sync
+    cursor. A user can have several. See spec/plaid-connect.md,
+    spec/plaid-sync.md, context/plaid-integration.md."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    # Plaid's Item id — not a secret, plaintext. Globally unique (Plaid
+    # guarantees it): makes re-link lookup one query, and a cross-user
+    # re-exchange an IntegrityError the route turns into 409.
+    plaid_item_id = db.Column(db.String(120), nullable=False, unique=True)
+    # Fernet ciphertext of the access_token. NOT NULL — a real Item always
+    # has one (unlike the old nullable User column that doubled as the
+    # "connected?" flag).
+    access_token_encrypted = db.Column(db.LargeBinary, nullable=False)
+    # Per-Item /transactions/sync cursor. Null = never synced.
+    sync_cursor = db.Column(db.String(255), nullable=True)
+    institution_name = db.Column(db.String(255), nullable=True)
+    institution_id = db.Column(db.String(120), nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    # Set at the end of each successful per-Item sync; feeds GET /status.
+    last_synced_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "plaid_item_id", name="uq_plaid_item_user_item"),
+    )
 
 
 class Category(db.Model):
@@ -143,3 +179,33 @@ class RefreshToken(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=False)
     revoked_at = db.Column(db.DateTime, nullable=True)
+
+
+class InviteCode(db.Model):
+    """Single-use signup gate. Created only by the operator via
+    mint_invite.py — there is no HTTP path that generates a code. See
+    spec/signup.md."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    # Null = never expires.
+    expires_at = db.Column(db.DateTime, nullable=True)
+    # Null = unused. Set together on a successful signup.
+    used_at = db.Column(db.DateTime, nullable=True)
+    used_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+
+
+class AuthThrottle(db.Model):
+    """Fixed-window rate-limit counter for /api/login and /api/signup, keyed
+    by (scope, client-IP). Not a per-account lockout (that would be a DoS
+    vector) — purely a brute-force bound. See spec/signup.md's rate-limiting
+    section."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    scope = db.Column(db.String(20), nullable=False)  # "login" | "signup"
+    key = db.Column(db.String(64), nullable=False)  # client IP
+    window_start = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    count = db.Column(db.Integer, nullable=False, default=0)
+
+    __table_args__ = (db.UniqueConstraint("scope", "key", name="uq_auth_throttle_scope_key"),)

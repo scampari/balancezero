@@ -10,6 +10,26 @@
       rel="stylesheet"
     />
     <title>BalanceZero</title>
+    <script>
+      // Set the theme before first paint so there's no flash of the wrong
+      // palette. ThemeContext takes over once React mounts. Keep in sync
+      // with src/theme/themes.ts (STORAGE_KEY, resolve()).
+      (function () {
+        try {
+          var choice = localStorage.getItem('bz.theme') || 'system'
+          var resolved =
+            choice === 'system'
+              ? window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark'
+              : choice
+          document.documentElement.dataset.theme = resolved
+          document.documentElement.style.colorScheme = resolved === 'light' ? 'light' : 'dark'
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark'
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

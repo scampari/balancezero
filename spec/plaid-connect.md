@@ -28,6 +28,39 @@ access token encrypted at rest. Replaces `spec/simplefin-connect.md`
 
 ## Integration test contract
 
+> **`changes/008` rewrite (2026-08-27) — multi-institution.** The
+> single-institution contract below is superseded on these points (the rest
+> — link-token flow, demo guard, sanitized errors, no-SSRF reasoning —
+> stands):
+>
+> - **Storage:** a new `PlaidItem` row per linked institution
+>   (`user_id`, globally-unique `plaid_item_id`, NOT-NULL
+>   `access_token_encrypted` Fernet, `sync_cursor`, `institution_name`,
+>   `institution_id`, `last_synced_at`). The three `User.plaid_*` columns
+>   are dropped. `Account.plaid_item_id` FK, `ON DELETE SET NULL`.
+> - **`POST /api/plaid/connect`:** body may include `institution_name` /
+>   `institution_id` (frontend fills them from Plaid Link's `onSuccess`
+>   metadata). Response `200 {"status":"connected","item":{id,
+>   institution_name,institution_id,account_count,last_synced}}`. Look up
+>   `(user_id, plaid_item_id)`: found → update the token/name in place
+>   (keep the cursor + accounts); else insert. A `plaid_item_id` already
+>   owned by **another** user → `409`
+>   (`"this institution is already linked to another account"`).
+>   Reconnecting your own institution is still a `200`, never `409`.
+> - **`GET /api/plaid/status`:** `200 {"items":[{id,institution_name,
+>   institution_id,last_synced,account_count}]}` — a list, `[]` when none.
+>   `institution_name` falls back to `"Linked bank"` for backfilled rows.
+>   Never includes the access token or the raw Plaid item id.
+> - **`DELETE /api/plaid/items/<int:item_id>`** (new): `200
+>   {"status":"removed"}`. Deletes the `PlaidItem`; its accounts +
+>   transactions are kept (FK nulled). Best-effort Plaid `/item/remove`.
+>   demo → `403`; unknown id → `404`; not the caller's → `403`.
+> - **Tests:** `tests/test_plaid_connect.py` rewritten — see that file. The
+>   re-link-in-place branch and `DELETE` use a seeded `PlaidItem` + a
+>   stubbed Plaid client (live Sandbox can't re-exchange the same
+>   `item_id`); the connect/second-institution happy paths stay real
+>   `@requires_plaid_sandbox` Sandbox calls (`ins_109508` + `ins_109509`).
+
 ### POST /api/plaid/link-token
 
 **Setup:** An authenticated, non-demo user.
@@ -202,3 +235,43 @@ credentials set — it's not dead code, just not currently exercised.
   needed moving to `@requires_plaid_sandbox` during build, see Notes above.
   `app.py`, `conftest.py`, `dev.sh` updated for the new env vars
   (`PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENCRYPTION_KEY`).
+- 2026-08-27 — frontend Link flow wired (the piece flagged out-of-scope in
+  Notes). `react-plaid-link` added to `frontend/package.json`; `client.ts`
+  gains `createPlaidLinkToken` / `connectPlaid` (+ auto-refresh wrappers);
+  new `frontend/src/components/ConnectBankButton.tsx` runs the two-step
+  flow via `usePlaidLink`; `AccountsPage` shows "Connect a bank" (or
+  "Reconnect bank" once connected), gates "Sync now" on connection status
+  from `/api/plaid/status`, and auto-syncs after a successful connect.
+  Verified end-to-end against the running app: the button calls
+  `POST /api/plaid/link-token` and surfaces the backend's `403` for the
+  demo user inline. A real-bank Sandbox click-through still needs real
+  `PLAID_CLIENT_ID`/`PLAID_SECRET` in the environment.
+- 2026-08-27 — OAuth-institution redirect wired (some banks require it).
+  Backend: new optional `PLAID_REDIRECT_URI` config (`app.py`), passed to
+  `link_token_create` only when set (`plaid_api.py`) — Plaid rejects an
+  unregistered redirect_uri, so it must be omitted otherwise. Frontend:
+  `ConnectBankButton` parks the `link_token` in `localStorage` across the
+  full-page OAuth redirect (documented Plaid guidance; scoped to one key,
+  deleted on flow end — a deliberate, narrow exception to
+  `context/security-requirements.md`'s "no tokens in web storage", which
+  targets the JWT/refresh token, not the short-lived single-institution
+  `link_token`), then re-inits Link with `receivedRedirectUri` and
+  auto-opens when it lands back on `/accounts?oauth_state_id=...`. Also
+  added `python-dotenv` + `load_dotenv()` so a gitignored project-root
+  `.env` supplies these (`requirements.txt`, `app.py`, `dev.sh`).
+  Operator must register the redirect URI in the Plaid dashboard (Team
+  Settings → API → Allowed redirect URIs). Target is Production
+  (`PLAID_ENV=production`, Production `PLAID_SECRET`, Link use case set
+  under Data Transparency): redirect URI
+  `https://balancezero.<tailnet>.ts.net/accounts` — Production requires
+  `https://`, so a local production build needs a self-signed https origin
+  or must point at the deployed host. Sandbox would use
+  `http://localhost:5173/accounts`. Non-OAuth linking is unaffected when
+  `PLAID_REDIRECT_URI` is unset. Full backend suite green (128 passed, 9
+  Plaid-sandbox skips).
+- 008 (2026-08-27) — multi-institution. `PlaidItem` (1:many) replaces the
+  scalar `User.plaid_*` columns; `/connect` gains institution fields +
+  in-place re-link + cross-user `409`; `/status` returns an item list;
+  new `DELETE /api/plaid/items/<id>`. See the rewrite note at the top of
+  the contract and `changes/008-multi-institution-plaid/plan.md`. Migration
+  `035d62499d87` (backfill verified). Backend suite 162 passed / 5 skipped.

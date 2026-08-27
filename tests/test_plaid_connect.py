@@ -1,44 +1,30 @@
-"""Integration tests for spec/plaid-connect.md.
+"""Integration tests for spec/plaid-connect.md (multi-institution, changes/008).
 
-Hits Plaid's real Sandbox API rather than mocking, per spec/plaid-connect.md's
-Notes and context/testing.md's Plaid Sandbox entry: unlike SimpleFIN's demo
-bridge (a one-time-claim resource that got exhausted by repeated automated
-test runs during that slice's own development), Plaid Sandbox is built for
-exactly this — unlimited test Items, default credentials that work
-repeatedly, and /sandbox/public_token/create to generate a fresh
-public_token per test without ever touching the Link UI.
+Hits Plaid's real Sandbox API for the exchange happy-paths, per
+context/testing.md's Plaid Sandbox entry (unlimited test Items, repeatable).
+The re-link-in-place branch and the DELETE route are exercised with a
+seeded PlaidItem + a stubbed Plaid client, because live Sandbox can't be
+made to re-exchange the same item_id (every sandbox_public_token_create
+mints a fresh Item).
 
-Requires real PLAID_CLIENT_ID / PLAID_SECRET (Sandbox) credentials in the
-environment. Three tests that specifically exercise a real successful
-exchange (test_connect_with_valid_public_token_succeeds,
-test_reconnect_replaces_existing_connection,
-test_status_returns_true_after_connecting) are skipped when those aren't
-present — see `requires_plaid_sandbox` below. Every other test hits our own
-(not-yet-implemented) routes directly and needs no live Plaid call at all.
+Requires real PLAID_CLIENT_ID / PLAID_SECRET (Sandbox) for the
+@requires_plaid_sandbox tests; the rest run offline.
 """
 
 import os
 
 import plaid
 import pytest
-from models import db
+from cryptography.fernet import Fernet
+from models import Account, PlaidItem, User, db
 from plaid.api import plaid_api
 from plaid.model.products import Products
 from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCreateRequest
+from werkzeug.security import generate_password_hash
 
-# Plaid's standard Sandbox test institution ("First Platypus Bank"). Verify
-# against current Plaid docs if this ever needs changing — not re-verified
-# with the same rigor as the SDK call shapes themselves (see plan's research).
-SANDBOX_INSTITUTION_ID = "ins_109508"
+SANDBOX_INSTITUTION_ID = "ins_109508"  # First Platypus Bank
+SANDBOX_INSTITUTION_ID_2 = "ins_109509"  # First Gingham Credit Union
 
-# CORRECTION (made during auto-build, not test-planning/writing): app.py
-# requires PLAID_CLIENT_ID/PLAID_SECRET to exist just to import (no default,
-# by design), so conftest.py sets placeholder values for every test run —
-# mere truthiness (the original check here) can no longer tell a real
-# credential apart from the placeholder. Compares against the exact known
-# placeholder strings instead. The *intent* (skip these 3 tests without a
-# real Sandbox account) is unchanged — this fixes the mechanism, not the
-# contract.
 _PLACEHOLDER_PLAID_CLIENT_ID = "test-placeholder-client-id"
 _PLACEHOLDER_PLAID_SECRET = "test-placeholder-secret"
 _HAS_PLAID_SANDBOX_CREDENTIALS = (
@@ -60,17 +46,33 @@ def _plaid_sandbox_client():
     return plaid_api.PlaidApi(plaid.ApiClient(configuration))
 
 
-def _create_sandbox_public_token():
-    """Real call to Plaid Sandbox — generates a fresh, valid public_token
-    without touching the Link UI. Safe to call repeatedly (see module
-    docstring); each call produces a token usable exactly once for exchange,
-    same as a real Link completion would."""
+def _create_sandbox_public_token(institution_id=SANDBOX_INSTITUTION_ID):
     request = SandboxPublicTokenCreateRequest(
-        institution_id=SANDBOX_INSTITUTION_ID,
+        institution_id=institution_id,
         initial_products=[Products("transactions")],
     )
-    response = _plaid_sandbox_client().sandbox_public_token_create(request)
-    return response["public_token"]
+    return _plaid_sandbox_client().sandbox_public_token_create(request)["public_token"]
+
+
+class _StubExchangeClient:
+    """Returns a fixed item_id so the re-link-in-place branch can be tested
+    without a live Sandbox re-exchange."""
+
+    def __init__(self, item_id, access_token="access-sandbox-second"):
+        self._item_id = item_id
+        self._access_token = access_token
+
+    def item_public_token_exchange(self, _request):
+        return {"access_token": self._access_token, "item_id": self._item_id}
+
+    def item_remove(self, _request):
+        return {"request_id": "stub"}
+
+
+def _stub_plaid(monkeypatch, stub):
+    import plaid_api as plaid_api_module
+
+    monkeypatch.setattr(plaid_api_module, "_plaid_client", lambda: stub)
 
 
 # ---------------------------------------------------------------------------
@@ -80,37 +82,17 @@ def _create_sandbox_public_token():
 
 @requires_plaid_sandbox
 def test_link_token_created_for_authenticated_user(client, test_user, auth_headers):
-    # CORRECTION (found during auto-build, running against a real
-    # implementation for the first time): originally written un-skipped,
-    # reasoning "this just calls our own not-yet-built route." That's true
-    # for confirm-red (a 404 needs no Plaid call), but once the route
-    # exists it calls Plaid's real /link/token/create internally — a 200
-    # here genuinely requires real Sandbox credentials, same as the other
-    # three @requires_plaid_sandbox tests. The demo-user and no-token error
-    # cases below correctly don't need this (they 403/401 before ever
-    # reaching Plaid).
-    # Act
     response = client.post("/api/plaid/link-token", headers=auth_headers)
-
-    # Assert
     assert response.status_code == 200
     assert "link_token" in response.get_json()
 
 
 def test_link_token_denied_for_demo_user(client, demo_auth_headers):
-    # Act
-    response = client.post("/api/plaid/link-token", headers=demo_auth_headers)
-
-    # Assert
-    assert response.status_code == 403
+    assert client.post("/api/plaid/link-token", headers=demo_auth_headers).status_code == 403
 
 
 def test_link_token_without_token_returns_401(client, test_user):
-    # Act
-    response = client.post("/api/plaid/link-token")
-
-    # Assert
-    assert response.status_code == 401
+    assert client.post("/api/plaid/link-token").status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -119,77 +101,95 @@ def test_link_token_without_token_returns_401(client, test_user):
 
 
 @requires_plaid_sandbox
-def test_connect_with_valid_public_token_succeeds(client, test_user, auth_headers):
-    # Arrange — a real, fresh public_token from Plaid Sandbox
-    public_token = _create_sandbox_public_token()
-
-    # Act
-    response = client.post("/api/plaid/connect", json={"public_token": public_token}, headers=auth_headers)
-
-    # Assert
-    assert response.status_code == 200
-    assert response.get_json() == {"status": "connected"}
-
-    # Assert side effect — encrypted, not plaintext; item_id stored too
-    db.session.refresh(test_user)
-    assert test_user.plaid_access_token_encrypted is not None
-    assert test_user.plaid_item_id is not None
-
-
-def test_connect_without_token_returns_401(client, test_user):
-    # Act — placeholder public_token is fine, the auth check happens first
-    response = client.post("/api/plaid/connect", json={"public_token": "placeholder"})
-
-    # Assert
-    assert response.status_code == 401
-
-
-def test_connect_as_demo_user_returns_403(client, demo_auth_headers):
+def test_connect_creates_a_plaid_item(client, test_user, auth_headers):
     # Act
     response = client.post(
-        "/api/plaid/connect", json={"public_token": "placeholder"}, headers=demo_auth_headers
+        "/api/plaid/connect",
+        json={"public_token": _create_sandbox_public_token(), "institution_name": "First Platypus Bank"},
+        headers=auth_headers,
     )
 
     # Assert
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "connected"
+    assert body["item"]["institution_name"] == "First Platypus Bank"
+    assert "access_token" not in body["item"]  # never leaked
+
+    # Side effect — exactly one PlaidItem, token encrypted, item id stored
+    items = PlaidItem.query.filter_by(user_id=test_user.id).all()
+    assert len(items) == 1
+    assert items[0].plaid_item_id
+    assert items[0].access_token_encrypted not in (None, b"", items[0].plaid_item_id.encode())
+    assert items[0].institution_name == "First Platypus Bank"
+
+
+@requires_plaid_sandbox
+def test_connect_second_institution_adds_a_second_item(client, test_user, auth_headers):
+    # Arrange — one institution already linked
+    client.post(
+        "/api/plaid/connect",
+        json={"public_token": _create_sandbox_public_token(SANDBOX_INSTITUTION_ID)},
+        headers=auth_headers,
+    )
+
+    # Act — link a different institution
+    response = client.post(
+        "/api/plaid/connect",
+        json={"public_token": _create_sandbox_public_token(SANDBOX_INSTITUTION_ID_2)},
+        headers=auth_headers,
+    )
+
+    # Assert — two distinct rows, not a replace
+    assert response.status_code == 200
+    items = PlaidItem.query.filter_by(user_id=test_user.id).all()
+    assert len(items) == 2
+    assert len({i.plaid_item_id for i in items}) == 2
+
+
+def test_reconnect_same_item_updates_in_place(client, test_user, auth_headers, plaid_item, monkeypatch):
+    # Arrange — plaid_item fixture already linked "test-item-id"; stub the
+    # exchange to return that same item id (a token repair / re-Link run).
+    original_token = plaid_item.access_token_encrypted
+    _stub_plaid(monkeypatch, _StubExchangeClient(item_id="test-item-id"))
+
+    # Act
+    response = client.post(
+        "/api/plaid/connect",
+        json={"public_token": "public-sandbox-anything", "institution_name": "Renamed Bank"},
+        headers=auth_headers,
+    )
+
+    # Assert — still one row, token refreshed, name updated
+    assert response.status_code == 200
+    items = PlaidItem.query.filter_by(user_id=test_user.id).all()
+    assert len(items) == 1
+    db.session.refresh(items[0])
+    assert items[0].access_token_encrypted != original_token
+    assert items[0].institution_name == "Renamed Bank"
+
+
+def test_connect_without_token_returns_401(client, test_user):
+    assert client.post("/api/plaid/connect", json={"public_token": "x"}).status_code == 401
+
+
+def test_connect_as_demo_user_returns_403(client, demo_auth_headers):
+    response = client.post("/api/plaid/connect", json={"public_token": "x"}, headers=demo_auth_headers)
     assert response.status_code == 403
 
 
 def test_connect_missing_public_token_returns_400(client, test_user, auth_headers):
-    # Act
-    response = client.post("/api/plaid/connect", json={}, headers=auth_headers)
-
-    # Assert
-    assert response.status_code == 400
+    assert client.post("/api/plaid/connect", json={}, headers=auth_headers).status_code == 400
 
 
 def test_connect_with_invalid_public_token_returns_502(client, test_user, auth_headers):
-    # Act — syntactically-plausible but fake public_token; Plaid rejects it
     response = client.post(
-        "/api/plaid/connect", json={"public_token": "public-sandbox-not-a-real-token"}, headers=auth_headers
+        "/api/plaid/connect",
+        json={"public_token": "public-sandbox-not-a-real-token"},
+        headers=auth_headers,
     )
-
-    # Assert — sanitized error, not Plaid's raw response relayed
     assert response.status_code == 502
-    body = response.get_json()
-    assert "error" in body
-
-
-@requires_plaid_sandbox
-def test_reconnect_replaces_existing_connection(client, test_user, auth_headers):
-    # Arrange — connect once already
-    first_token = _create_sandbox_public_token()
-    client.post("/api/plaid/connect", json={"public_token": first_token}, headers=auth_headers)
-    db.session.refresh(test_user)
-    first_stored_value = test_user.plaid_access_token_encrypted
-
-    # Act — connect again with a fresh public_token (a real one only exchanges once)
-    second_token = _create_sandbox_public_token()
-    response = client.post("/api/plaid/connect", json={"public_token": second_token}, headers=auth_headers)
-
-    # Assert — succeeds, not a conflict
-    assert response.status_code == 200
-    db.session.refresh(test_user)
-    assert test_user.plaid_access_token_encrypted != first_stored_value
+    assert "error" in response.get_json()
 
 
 # ---------------------------------------------------------------------------
@@ -197,32 +197,97 @@ def test_reconnect_replaces_existing_connection(client, test_user, auth_headers)
 # ---------------------------------------------------------------------------
 
 
-def test_status_returns_false_when_not_connected(client, test_user, auth_headers):
-    # Act
-    response = client.get("/api/plaid/status", headers=auth_headers)
-
-    # Assert
-    assert response.status_code == 200
-    assert response.get_json() == {"connected": False}
-
-
-@requires_plaid_sandbox
-def test_status_returns_true_after_connecting(client, test_user, auth_headers):
-    # Arrange
-    public_token = _create_sandbox_public_token()
-    client.post("/api/plaid/connect", json={"public_token": public_token}, headers=auth_headers)
+def test_status_lists_linked_institutions_with_account_counts(client, test_user, auth_headers, plaid_item):
+    # Arrange — two accounts under the linked item
+    db.session.add_all(
+        [
+            Account(user_id=test_user.id, name="Checking", plaid_account_id="a1", plaid_item_id=plaid_item.id),
+            Account(user_id=test_user.id, name="Savings", plaid_account_id="a2", plaid_item_id=plaid_item.id),
+        ]
+    )
+    db.session.commit()
 
     # Act
     response = client.get("/api/plaid/status", headers=auth_headers)
 
     # Assert
     assert response.status_code == 200
-    assert response.get_json() == {"connected": True}
+    items = response.get_json()["items"]
+    assert len(items) == 1
+    assert items[0]["institution_name"] == "First Platypus Bank"
+    assert items[0]["account_count"] == 2
+    assert items[0]["last_synced"] is None
+    assert "access_token" not in items[0]
+
+
+def test_status_empty_when_not_connected(client, test_user, auth_headers):
+    response = client.get("/api/plaid/status", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.get_json() == {"items": []}
 
 
 def test_status_without_token_returns_401(client, test_user):
+    assert client.get("/api/plaid/status").status_code == 401
+
+
+def test_status_uses_generic_label_when_institution_name_missing(client, test_user, auth_headers):
+    db.session.add(
+        PlaidItem(
+            user_id=test_user.id,
+            plaid_item_id="unnamed-item",
+            access_token_encrypted=b"x",
+        )
+    )
+    db.session.commit()
+    items = client.get("/api/plaid/status", headers=auth_headers).get_json()["items"]
+    assert items[0]["institution_name"] == "Linked bank"
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/plaid/items/<id>
+# ---------------------------------------------------------------------------
+
+
+def test_remove_item_deletes_it_but_keeps_accounts(client, test_user, auth_headers, plaid_item, monkeypatch):
+    # Arrange — an account (with a transaction) under the item
+    _stub_plaid(monkeypatch, _StubExchangeClient(item_id="test-item-id"))
+    account = Account(
+        user_id=test_user.id, name="Checking", plaid_account_id="a1", plaid_item_id=plaid_item.id
+    )
+    db.session.add(account)
+    db.session.commit()
+    account_id = account.id
+    item_id = plaid_item.id
+
     # Act
-    response = client.get("/api/plaid/status")
+    response = client.delete(f"/api/plaid/items/{item_id}", headers=auth_headers)
 
     # Assert
-    assert response.status_code == 401
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "removed"}
+    assert db.session.get(PlaidItem, item_id) is None
+    kept = db.session.get(Account, account_id)
+    assert kept is not None
+    db.session.refresh(kept)
+    assert kept.plaid_item_id is None  # ON DELETE SET NULL
+
+
+def test_remove_unknown_item_returns_404(client, test_user, auth_headers):
+    assert client.delete("/api/plaid/items/999999", headers=auth_headers).status_code == 404
+
+
+def test_remove_other_users_item_returns_403(client, test_user, auth_headers):
+    other = User(username="other", password_hash=generate_password_hash("x" * 12))
+    db.session.add(other)
+    db.session.flush()
+    theirs = PlaidItem(user_id=other.id, plaid_item_id="theirs", access_token_encrypted=b"x")
+    db.session.add(theirs)
+    db.session.commit()
+
+    response = client.delete(f"/api/plaid/items/{theirs.id}", headers=auth_headers)
+    assert response.status_code == 403
+    assert db.session.get(PlaidItem, theirs.id) is not None
+
+
+def test_remove_item_as_demo_returns_403(client, demo_auth_headers):
+    assert client.delete("/api/plaid/items/1", headers=demo_auth_headers).status_code == 403

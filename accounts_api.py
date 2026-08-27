@@ -24,6 +24,10 @@ def list_accounts():
                         if account.available_balance is not None
                         else None,
                         "balance_date": account.balance_date.isoformat() if account.balance_date else None,
+                        # Our own PlaidItem row id (not a Plaid identifier) —
+                        # lets the UI group accounts by linked institution.
+                        # Null for demo/manual accounts and unlinked ones.
+                        "plaid_item_id": account.plaid_item_id,
                     }
                     for account in accounts
                 ]
