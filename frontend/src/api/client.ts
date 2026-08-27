@@ -76,6 +76,10 @@ export interface BudgetCategory {
   parent_id: number | null
   position: number
   archived: boolean
+  // A top-level category with at least one active child. Its columns are the
+  // sum of its children (+ any own legacy amounts); it can't be allocated to
+  // or have transactions assigned to it.
+  is_group: boolean
   allocated_this_month: string
   spent_this_month: string
   available: string

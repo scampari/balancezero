@@ -4,11 +4,14 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 
+from api_helpers import category_has_children as _category_has_children
 from api_helpers import current_user_id as _current_user_id
 from api_helpers import infer_category_id as _infer_category_id
 from api_helpers import month_bounds as _month_bounds
 from api_helpers import parse_month as _parse_month
 from models import Account, Category, Transaction, db
+
+_GROUP_CATEGORY_ERROR = {"error": "that category is a group — pick one of its subcategories"}
 
 transactions_bp = Blueprint("transactions_api", __name__, url_prefix="/api")
 
@@ -109,6 +112,8 @@ def patch_transaction(transaction_id):
             return jsonify({"error": "category not found"}), 404
         if category.user_id != user_id:
             return jsonify({"error": "forbidden"}), 403
+        if _category_has_children(category.id):
+            return jsonify(_GROUP_CATEGORY_ERROR), 400
         category_name = category.name
 
     transaction.category_id = category_id
@@ -178,6 +183,8 @@ def create_transaction():
             return jsonify({"error": "category not found"}), 404
         if category.user_id != user_id:
             return jsonify({"error": "forbidden"}), 403
+        if _category_has_children(category.id):
+            return jsonify(_GROUP_CATEGORY_ERROR), 400
         category_name = category.name
     else:
         # No category given — auto-fill from a prior same-merchant choice.

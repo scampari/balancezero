@@ -121,6 +121,10 @@ export function TransactionsPage() {
 
   if (!transactions || !categories) return <PageLoading />
 
+  // Group categories total their children — a transaction can't be assigned
+  // to one (the server rejects it), so keep them out of the pickers.
+  const assignableCategories = categories.filter((category) => !category.is_group)
+
   const inputClass =
     'rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-xs text-(--color-text) outline-none focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)'
 
@@ -177,7 +181,7 @@ export function TransactionsPage() {
             Category
             <select name="category_id" className={inputClass}>
               <option value="">Uncategorized</option>
-              {categories.map((c) => (
+              {assignableCategories.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
@@ -242,7 +246,7 @@ export function TransactionsPage() {
                       >
                         <option value="">Uncategorized</option>
                         <option value={INCOME_OPTION}>To Be Budgeted</option>
-                        {categories.map((category) => (
+                        {assignableCategories.map((category) => (
                           <option key={category.id} value={category.id}>
                             {category.name}
                           </option>

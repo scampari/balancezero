@@ -2,11 +2,22 @@ from datetime import date
 
 from flask_jwt_extended import get_jwt_identity
 
-from models import Account, Transaction, db
+from models import Account, Category, Transaction, db
 
 
 def current_user_id():
     return int(get_jwt_identity())
+
+
+def category_has_children(category_id):
+    """True if the category has at least one non-archived subcategory — it's
+    a group total, not a spendable/allocatable line (see spec/budget-api.md)."""
+    return (
+        db.session.query(Category.id)
+        .filter(Category.parent_id == category_id, Category.archived.is_(False))
+        .first()
+        is not None
+    )
 
 
 def infer_category_id(user_id, description, cache=None):
@@ -20,6 +31,13 @@ def infer_category_id(user_id, description, cache=None):
     if cache is not None and description in cache:
         return cache[description]
 
+    # Exclude a category that has since become a group — a transaction can't
+    # be assigned to one (see spec/budget-api.md).
+    is_group = (
+        db.session.query(Category.id)
+        .filter(Category.parent_id == Transaction.category_id, Category.archived.is_(False))
+        .exists()
+    )
     prior = (
         db.session.query(Transaction.category_id)
         .join(Account, Transaction.account_id == Account.id)
@@ -27,6 +45,7 @@ def infer_category_id(user_id, description, cache=None):
             Account.user_id == user_id,
             Transaction.description == description,
             Transaction.category_id.isnot(None),
+            ~is_group,
         )
         .order_by(Transaction.posted_at.desc(), Transaction.id.desc())
         .first()

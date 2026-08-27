@@ -141,3 +141,7 @@ still has it and changes it, you probably want it back).
   `api_helpers.infer_category_id` — see `spec/plaid-sync.md` for the sync
   side. Never overrides an explicit category or an existing row's category.
   `tests/test_transactions.py` +3.
+- 014 (2026-08-27) — a category that is a group (has non-archived children)
+  can't hold transactions: `PATCH` and `POST /api/transactions` with such a
+  `category_id` → `400`. Auto-categorization (013) skips group categories
+  too. See `spec/budget-api.md`.

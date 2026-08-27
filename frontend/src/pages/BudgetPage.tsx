@@ -21,6 +21,25 @@ function formatMoney(value: string): string {
 
 const CURRENT_MONTH = new Date().toISOString().slice(0, 7) + '-01'
 
+const COLLAPSED_KEY = 'bz.budget.collapsed'
+
+function readCollapsed(): Set<number> {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_KEY)
+    return new Set(raw ? (JSON.parse(raw) as number[]) : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function writeCollapsed(ids: Set<number>): void {
+  try {
+    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...ids]))
+  } catch {
+    // non-fatal — collapse state just won't persist this session
+  }
+}
+
 const NUM_CELL = 'w-28 shrink-0 text-right tabular-nums text-sm'
 const HEAD_CELL = 'w-28 shrink-0 text-right text-xs font-medium tracking-wide text-(--color-text-muted) uppercase'
 const MINI_BTN =
@@ -44,6 +63,17 @@ export function BudgetPage() {
   const [targetDate, setTargetDate] = useState('')
   const [targetError, setTargetError] = useState<string | null>(null)
   const [isSavingTarget, setIsSavingTarget] = useState(false)
+  const [collapsed, setCollapsed] = useState<Set<number>>(readCollapsed)
+
+  function toggleCollapse(categoryId: number) {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(categoryId)) next.delete(categoryId)
+      else next.add(categoryId)
+      writeCollapsed(next)
+      return next
+    })
+  }
 
   function loadBudget(token: string) {
     return getBudgetWithAutoRefresh(token, setAccessToken).then((data) => setBudget(data))
@@ -204,6 +234,16 @@ export function BudgetPage() {
       >
         <div className="flex items-center gap-4">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            {category.is_group && (
+              <button
+                type="button"
+                aria-label={`${collapsed.has(category.id) ? 'Expand' : 'Collapse'} ${category.name}`}
+                onClick={() => toggleCollapse(category.id)}
+                className="shrink-0 text-xs text-(--color-text-faint) transition-colors hover:text-(--color-text)"
+              >
+                {collapsed.has(category.id) ? '▸' : '▾'}
+              </button>
+            )}
             {isChild && <span className="text-(--color-text-faint)">↳</span>}
             {renamingId === category.id ? (
               <input
@@ -220,7 +260,13 @@ export function BudgetPage() {
               />
             ) : (
               <span
-                className={`truncate text-sm ${isChild ? 'text-(--color-text-muted)' : 'text-(--color-text)'}`}
+                className={`truncate text-sm ${
+                  isChild
+                    ? 'text-(--color-text-muted)'
+                    : category.is_group
+                      ? 'font-medium text-(--color-text)'
+                      : 'text-(--color-text)'
+                }`}
               >
                 {category.name}
               </span>
@@ -240,37 +286,45 @@ export function BudgetPage() {
           >
             {formatMoney(category.available)}
           </span>
-          <label className="flex w-28 shrink-0 items-center justify-end gap-1.5">
-            <span className="text-xs text-(--color-text-faint)">$</span>
-            <input
-              type="text"
-              inputMode="decimal"
-              aria-label={`Assign amount for ${category.name}`}
-              value={draft ?? category.allocated_this_month}
-              onChange={(event) =>
-                setAllocationDrafts((prev) => ({ ...prev, [category.id]: event.target.value }))
-              }
-              onBlur={() => handleAllocationCommit(category.id)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') event.currentTarget.blur()
-              }}
-              className="tabular-nums w-20 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-right text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
-            />
-          </label>
+          {category.is_group ? (
+            <span className={`${NUM_CELL} font-medium text-(--color-text-muted)`}>
+              {formatMoney(category.allocated_this_month)}
+            </span>
+          ) : (
+            <label className="flex w-28 shrink-0 items-center justify-end gap-1.5">
+              <span className="text-xs text-(--color-text-faint)">$</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                aria-label={`Assign amount for ${category.name}`}
+                value={draft ?? category.allocated_this_month}
+                onChange={(event) =>
+                  setAllocationDrafts((prev) => ({ ...prev, [category.id]: event.target.value }))
+                }
+                onBlur={() => handleAllocationCommit(category.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') event.currentTarget.blur()
+                }}
+                className="tabular-nums w-20 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-right text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+              />
+            </label>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           {targetLine(category)}
           <div className="ml-auto flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() =>
-                targetEditorFor === category.id ? setTargetEditorFor(null) : openTargetEditor(category)
-              }
-              className={MINI_BTN}
-            >
-              {category.target ? 'Edit target' : 'Set target'}
-            </button>
+            {!category.is_group && (
+              <button
+                type="button"
+                onClick={() =>
+                  targetEditorFor === category.id ? setTargetEditorFor(null) : openTargetEditor(category)
+                }
+                className={MINI_BTN}
+              >
+                {category.target ? 'Edit target' : 'Set target'}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -411,9 +465,10 @@ export function BudgetPage() {
             <ul className="divide-y divide-(--color-border)">
               {topLevel.map((parent) => {
                 const kids = childrenOf(parent.id)
+                const hideKids = parent.is_group && collapsed.has(parent.id)
                 return [
                   renderCategoryRow(parent, false, topLevel),
-                  ...kids.map((child) => renderCategoryRow(child, true, kids)),
+                  ...(hideKids ? [] : kids.map((child) => renderCategoryRow(child, true, kids))),
                 ]
               })}
               {orphans.map((orphan) => renderCategoryRow(orphan, true, orphans))}

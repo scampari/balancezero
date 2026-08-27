@@ -636,3 +636,49 @@ def test_manual_transaction_explicit_category_wins_over_inference(client, test_u
         headers=auth_headers,
     )
     assert response.get_json()["category_id"] == dining.id
+
+
+# ---------------------------------------------------------------------------
+# a group category can't hold transactions (changes/014)
+# ---------------------------------------------------------------------------
+
+
+def _make_group(user_id):
+    """A parent category with one child — the parent is a group."""
+    parent = Category(user_id=user_id, name="Food")
+    db.session.add(parent)
+    db.session.flush()
+    db.session.add(Category(user_id=user_id, name="Groceries", parent_id=parent.id))
+    db.session.commit()
+    return parent
+
+
+def test_patch_transaction_to_a_group_category_returns_400(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "-10.00", "Store")
+    group = _make_group(test_user.id)
+
+    response = client.patch(
+        f"/api/transactions/{txn.id}", json={"category_id": group.id}, headers=auth_headers
+    )
+    assert response.status_code == 400
+    db.session.refresh(txn)
+    assert txn.category_id is None
+
+
+def test_create_manual_transaction_with_a_group_category_returns_400(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    group = _make_group(test_user.id)
+
+    response = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account.id,
+            "posted_at": CURRENT_MONTH.isoformat(),
+            "amount": "-10.00",
+            "description": "Store",
+            "category_id": group.id,
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 400

@@ -1238,3 +1238,97 @@ def test_get_budget_monthly_target_months_remaining_is_one(client, test_user, au
     # Assert
     assert entry["target"]["months_remaining"] == 1
     assert entry["target"]["needed_this_month"] == "400.00"
+
+
+# ---------------------------------------------------------------------------
+# Category groups — a top-level category with children (changes/014)
+# ---------------------------------------------------------------------------
+
+
+def _allocate(client, auth_headers, category_id, amount, month=CURRENT_MONTH):
+    return client.post(
+        f"/api/categories/{category_id}/allocations",
+        json={"month": month, "amount": amount},
+        headers=auth_headers,
+    )
+
+
+def _add_txn(user_id, category_id, amount, description="X"):
+    from models import Account, Transaction
+
+    account = Account.query.filter_by(user_id=user_id).first()
+    if account is None:
+        account = Account(user_id=user_id, name="Checking")
+        db.session.add(account)
+        db.session.flush()
+    db.session.add(Transaction(
+        account_id=account.id, category_id=category_id,
+        posted_at=date.today(), amount=amount, description=description,
+    ))
+    db.session.commit()
+
+
+def test_top_level_with_children_is_a_group_summing_its_children(client, test_user, auth_headers):
+    food = _create_category(client, auth_headers, name="Food").get_json()["id"]
+    groceries = client.post("/api/categories", json={"name": "Groceries", "parent_id": food}, headers=auth_headers).get_json()["id"]
+    dining = client.post("/api/categories", json={"name": "Dining", "parent_id": food}, headers=auth_headers).get_json()["id"]
+    _allocate(client, auth_headers, groceries, "100.00")
+    _allocate(client, auth_headers, dining, "40.00")
+    _add_txn(test_user.id, groceries, "-30.00")
+
+    food_entry = _budget_entry(client, auth_headers, food)
+    assert food_entry["is_group"] is True
+    assert food_entry["allocated_this_month"] == "140.00"
+    assert food_entry["spent_this_month"] == "-30.00"
+    assert food_entry["available"] == "110.00"  # 140 allocated - 30 spent
+
+    groceries_entry = _budget_entry(client, auth_headers, groceries)
+    assert groceries_entry["is_group"] is False
+
+
+def test_group_total_folds_in_the_parents_own_legacy_amounts(client, test_user, auth_headers):
+    food = _create_category(client, auth_headers, name="Food").get_json()["id"]
+    _allocate(client, auth_headers, food, "50.00")  # allowed — no children yet
+    _add_txn(test_user.id, food, "-20.00")
+    groceries = client.post("/api/categories", json={"name": "Groceries", "parent_id": food}, headers=auth_headers).get_json()["id"]
+    _allocate(client, auth_headers, groceries, "100.00")
+
+    food_entry = _budget_entry(client, auth_headers, food)
+    assert food_entry["allocated_this_month"] == "150.00"  # 50 own + 100 child
+    assert food_entry["spent_this_month"] == "-20.00"
+    assert food_entry["available"] == "130.00"  # 150 - 20
+
+
+def test_group_is_not_double_counted_in_budget_totals(client, test_user, auth_headers):
+    food = _create_category(client, auth_headers, name="Food").get_json()["id"]
+    groceries = client.post("/api/categories", json={"name": "Groceries", "parent_id": food}, headers=auth_headers).get_json()["id"]
+    _allocate(client, auth_headers, groceries, "100.00")
+
+    body = client.get("/api/budget", headers=auth_headers).get_json()
+    assert body["totals"]["budgeted"] == "100.00"  # child once, not child + group
+
+
+def test_top_level_without_children_is_not_a_group(client, test_user, auth_headers):
+    rent = _create_category(client, auth_headers, name="Rent").get_json()["id"]
+    _allocate(client, auth_headers, rent, "500.00")
+
+    entry = _budget_entry(client, auth_headers, rent)
+    assert entry["is_group"] is False
+    assert entry["allocated_this_month"] == "500.00"
+
+
+def test_archived_child_does_not_make_the_parent_a_group(client, test_user, auth_headers):
+    food = _create_category(client, auth_headers, name="Food").get_json()["id"]
+    sub = client.post("/api/categories", json={"name": "Sub", "parent_id": food}, headers=auth_headers).get_json()["id"]
+    client.patch(f"/api/categories/{sub}", json={"archived": True}, headers=auth_headers)
+
+    entry = _budget_entry(client, auth_headers, food)
+    assert entry["is_group"] is False
+
+
+def test_set_allocation_on_a_group_category_returns_400(client, test_user, auth_headers):
+    food = _create_category(client, auth_headers, name="Food").get_json()["id"]
+    client.post("/api/categories", json={"name": "Groceries", "parent_id": food}, headers=auth_headers)
+
+    response = _allocate(client, auth_headers, food, "100.00")
+    assert response.status_code == 400
