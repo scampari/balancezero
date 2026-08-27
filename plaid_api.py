@@ -217,10 +217,12 @@ def _upsert_account(user, plaid_account, plaid_item):
     """Returns the local Account row for this Plaid account, creating it if
     new. Balances are always overwritten (Plaid-owned, never user-edited).
     plaid_item_id is set on create AND update, so a backfilled or re-linked
-    account gets re-attached to its institution."""
+    account gets re-attached to its institution. A brand-new account also
+    gets a one-time "Starting Balance" transaction (see _add_starting_balance)."""
     account = Account.query.filter_by(user_id=user.id, plaid_account_id=plaid_account["account_id"]).first()
     balances = plaid_account["balances"]
-    if account is None:
+    is_new = account is None
+    if is_new:
         account = Account(user_id=user.id, plaid_account_id=plaid_account["account_id"], currency="USD")
         db.session.add(account)
     account.plaid_item_id = plaid_item.id
@@ -229,7 +231,33 @@ def _upsert_account(user, plaid_account, plaid_item):
     account.balance = balances["current"] or 0
     account.available_balance = balances["available"]
     db.session.flush()  # so a same-page transaction upsert can use account.id
+    if is_new:
+        _add_starting_balance(account, plaid_item)
     return account
+
+
+def _add_starting_balance(account, plaid_item):
+    """A one-time synthetic "To Be Budgeted" transaction equal to the
+    account's balance at first sync, so ready_to_assign reflects money
+    already in the bank — the import cutoff means transactions that predate
+    the connection are never pulled, so without this the balance would
+    silently vanish from the budget. Dated at the connection date. Only
+    created on account creation, so re-syncing never adds a second one;
+    skipped for a zero balance (nothing to reconcile)."""
+    if not account.balance:
+        return
+    db.session.add(
+        Transaction(
+            account_id=account.id,
+            category_id=None,
+            plaid_transaction_id=None,  # synthetic, not from Plaid
+            posted_at=plaid_item.import_cutoff or date.today(),
+            amount=account.balance,
+            description="Starting Balance",
+            pending=False,
+            is_income=True,
+        )
+    )
 
 
 def _upsert_transaction(account, plaid_transaction):

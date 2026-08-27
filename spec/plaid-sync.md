@@ -273,3 +273,12 @@ server-side logging of the swallowed exception in `sync()`.
   date — not the ~90 days of history Plaid's first sync returns). `NULL`
   cutoff = import everything. `removed` is unaffected (a no-op for anything
   never imported). Tests in `tests/test_plaid_sync.py`.
+- 012 (2026-08-27) — Starting Balance on connect. When `_upsert_account`
+  creates a brand-new local account, `_add_starting_balance` adds one
+  synthetic "To Be Budgeted" transaction (`is_income=true`,
+  `amount = account.balance`, `description="Starting Balance"`,
+  `plaid_transaction_id=null`, dated at `PlaidItem.import_cutoff or
+  today`). Pairs with the 011 import cutoff — the cutoff drops
+  pre-connection history, this puts the resulting balance back into
+  `ready_to_assign`. Created only on account creation (idempotent across
+  re-syncs); skipped for a zero balance. Tests in `tests/test_plaid_sync.py`.

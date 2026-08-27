@@ -12,6 +12,7 @@ positive = inflow — the upsert must negate on every write.
 
 import os
 import time
+from decimal import Decimal
 
 import plaid
 import pytest
@@ -396,3 +397,73 @@ def test_sync_with_null_cutoff_imports_all_history(client, test_user, auth_heade
 
     response = client.post("/api/plaid/sync", headers=auth_headers)
     assert response.get_json()["totals"]["transactions_added"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Starting Balance on a brand-new account (changes/012)
+# ---------------------------------------------------------------------------
+
+
+def _mock_account(account_id, current, name="Checking", available=None, iso="USD"):
+    return {
+        "account_id": account_id,
+        "name": name,
+        "balances": {"current": current, "available": available, "iso_currency_code": iso},
+    }
+
+
+def _sync_response_with_accounts(accounts, added=None):
+    body = _mock_sync_response(added=added)
+    body["accounts"] = accounts
+    return body
+
+
+def test_sync_adds_starting_balance_for_a_new_account(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-sb")
+
+    class _NewAccount:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts([_mock_account("acc-sb", 1500.00)])
+
+    _patch_client(monkeypatch, _NewAccount())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+    assert response.status_code == 200
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-sb").first()
+    starting = Transaction.query.filter_by(account_id=account.id, description="Starting Balance").all()
+    assert len(starting) == 1
+    assert starting[0].amount == account.balance == Decimal("1500.00")
+    assert starting[0].is_income is True
+    assert starting[0].plaid_transaction_id is None
+
+
+def test_sync_does_not_add_a_second_starting_balance_on_re_sync(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-sb2")
+
+    class _SameAccountTwice:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts([_mock_account("acc-sb", 1500.00)])
+
+    _patch_client(monkeypatch, _SameAccountTwice())
+
+    client.post("/api/plaid/sync", headers=auth_headers)
+    client.post("/api/plaid/sync", headers=auth_headers)
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-sb").first()
+    assert Transaction.query.filter_by(account_id=account.id, description="Starting Balance").count() == 1
+
+
+def test_sync_skips_starting_balance_for_a_zero_balance_account(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-sb3")
+
+    class _ZeroBalance:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts([_mock_account("acc-zero", 0)])
+
+    _patch_client(monkeypatch, _ZeroBalance())
+
+    client.post("/api/plaid/sync", headers=auth_headers)
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-zero").first()
+    assert Transaction.query.filter_by(account_id=account.id, description="Starting Balance").count() == 0
