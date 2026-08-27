@@ -17,6 +17,36 @@ instance, or Oracle Cloud's always-free ARM). No public inbound ports —
 Tailscale dials out — so lock the provider firewall to deny all inbound
 (SSH over Tailscale too).
 
+### Oracle Cloud Free Tier (arm64) — the $0 interim host
+
+- **Shape:** `VM.Standard.A1.Flex`, 2 OCPU / 12 GB, Ubuntu 22.04. Always
+  free. The free ARM pool is often "Out of host capacity" — retry, or
+  switch Availability Domain / region.
+- **Cloud firewall:** leave the default Security List as-is (SSH only, or
+  drop SSH and use Tailscale SSH). Nothing needs opening.
+- **Host firewall gotcha:** Oracle's Ubuntu images ship restrictive
+  `iptables` rules that block k3s pod/CNI traffic (CoreDNS never goes
+  ready). After installing k3s, allow the cluster CIDRs and persist:
+  ```sh
+  sudo iptables -I INPUT 1 -s 10.42.0.0/16 -j ACCEPT   # pods
+  sudo iptables -I INPUT 1 -s 10.43.0.0/16 -j ACCEPT   # services
+  sudo netfilter-persistent save
+  ```
+- **Images: build on the VM** (it's arm64 — don't copy images or
+  `node_modules` from an x86/mac dev box):
+  ```sh
+  git clone https://github.com/<you>/balancezero && cd balancezero
+  docker build -f deploy/Dockerfile.backend  -t balancezero-backend  .
+  docker build -f deploy/Dockerfile.frontend -t balancezero-frontend .
+  docker save balancezero-backend balancezero-frontend | sudo k3s ctr images import -
+  ```
+  (If `npm ci` errors on a rollup platform binary: `rm frontend/package-lock.json`
+  and let `npm install` regenerate it on-host.) Every Dockerfile base
+  (`python:3.13-slim`, `node:22-slim`, `nginx:1.27-alpine`, `postgres:16`)
+  publishes arm64, so no Dockerfile changes.
+- k3s and Tailscale both ship arm64 installers — the commands below are
+  unchanged.
+
 1. **Tailscale on the VM**
    ```sh
    curl -fsSL https://tailscale.com/install.sh | sh
