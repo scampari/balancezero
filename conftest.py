@@ -20,7 +20,7 @@ import pytest
 from werkzeug.security import generate_password_hash
 
 from app import app as flask_app, db
-from models import User
+from models import InviteCode, User
 
 TEST_USERNAME = "sam"
 TEST_PASSWORD = "correct horse battery staple"
@@ -77,3 +77,14 @@ def demo_user(client):
 def demo_auth_headers(client, demo_user):
     response = client.post("/api/login", json={"username": DEMO_USERNAME, "password": DEMO_PASSWORD})
     return {"Authorization": f"Bearer {response.get_json()['access_token']}"}
+
+
+INVITE_CODE = "test-invite-code"
+
+
+@pytest.fixture()
+def invite_code(client):
+    code = InviteCode(code=INVITE_CODE)
+    db.session.add(code)
+    db.session.commit()
+    return code

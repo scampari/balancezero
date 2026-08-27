@@ -9,6 +9,10 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
+    # Optional — captured at signup when supplied, unused beyond storage for
+    # now. Groundwork for a future password-reset slice so it needs no second
+    # migration. Username stays the sole login identifier.
+    email = db.Column(db.String(255), unique=True, nullable=True)
     is_demo = db.Column(db.Boolean, nullable=False, default=False)
     # Fernet ciphertext — null for the demo user, which has no real bank connection.
     # Plaid's access_token, not a full URL (unlike the SimpleFIN-era column this replaces).
@@ -143,3 +147,33 @@ class RefreshToken(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=False)
     revoked_at = db.Column(db.DateTime, nullable=True)
+
+
+class InviteCode(db.Model):
+    """Single-use signup gate. Created only by the operator via
+    mint_invite.py — there is no HTTP path that generates a code. See
+    spec/signup.md."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    # Null = never expires.
+    expires_at = db.Column(db.DateTime, nullable=True)
+    # Null = unused. Set together on a successful signup.
+    used_at = db.Column(db.DateTime, nullable=True)
+    used_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+
+
+class AuthThrottle(db.Model):
+    """Fixed-window rate-limit counter for /api/login and /api/signup, keyed
+    by (scope, client-IP). Not a per-account lockout (that would be a DoS
+    vector) — purely a brute-force bound. See spec/signup.md's rate-limiting
+    section."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    scope = db.Column(db.String(20), nullable=False)  # "login" | "signup"
+    key = db.Column(db.String(64), nullable=False)  # client IP
+    window_start = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    count = db.Column(db.Integer, nullable=False, default=0)
+
+    __table_args__ = (db.UniqueConstraint("scope", "key", name="uq_auth_throttle_scope_key"),)

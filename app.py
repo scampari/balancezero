@@ -44,8 +44,17 @@ app.config["PLAID_REDIRECT_URI"] = os.environ.get("PLAID_REDIRECT_URI")
 # Origin allowed to make credentialed cross-origin requests to /api/* (the React dev
 # server, and later the deployed frontend). Also used by auth_api's CSRF origin check.
 app.config["ALLOWED_ORIGIN"] = os.environ.get("ALLOWED_ORIGIN", "http://localhost:5173")
+# Number of trusted reverse proxies in front of the app. Behind the
+# k3s/Tailscale ingress the auth rate limiter would otherwise key every
+# request to the ingress pod's IP. Default 0 = no proxy (local dev, tests):
+# request.remote_addr is the direct peer, unchanged from before.
+app.config["TRUSTED_PROXY_COUNT"] = int(os.environ.get("TRUSTED_PROXY_COUNT", "0"))
 
 os.makedirs(app.instance_path, exist_ok=True)
+if app.config["TRUSTED_PROXY_COUNT"] > 0:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=app.config["TRUSTED_PROXY_COUNT"])
 db.init_app(app)
 migrate = Migrate(app, db)
 jwt = JWTManager(app)

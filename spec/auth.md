@@ -72,6 +72,7 @@ Replaces session-cookie auth with JWT access/refresh tokens, fixing the flagged 
 - CSRF: only `/api/refresh` and `/api/logout` touch the refresh cookie and need CSRF protection (e.g. origin check or double-submit token) — every other endpoint is bearer-token-only and needs none. See `context/security-requirements.md` for the full reasoning.
 - Test database: real Postgres via Docker, not SQLite — decided during test-planning specifically so constraint/type behavior matches production.
 - JWT library choice (flask-jwt-extended vs hand-rolled) is a build-time implementation detail, not part of this contract — the contract only specifies HTTP-observable behavior.
+- **`POST /api/login` is rate-limited as of `changes/007`** — a per-IP fixed-window counter (10 attempts / 15 min), shared with `POST /api/signup`. The `401`/`400` behavior above is unchanged; the only new response is `429` once the window is exhausted. Full contract in `spec/signup.md`'s rate-limiting section.
 
 ## Tests
 - `tests/test_auth.py` § `"test_login_with_valid_credentials_returns_access_token_and_sets_refresh_cookie"` — covers § POST /api/login contract (happy path + cookie attributes).

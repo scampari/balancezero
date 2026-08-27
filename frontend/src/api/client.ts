@@ -30,6 +30,22 @@ export async function login(username: string, password: string): Promise<{ acces
   return { accessToken: body.access_token }
 }
 
+// Invite-only account creation. On success the server logs the new user
+// straight in — same {access_token} body + refresh cookie as login().
+export async function register(
+  username: string,
+  password: string,
+  inviteCode: string,
+  email?: string,
+): Promise<{ accessToken: string }> {
+  const payload: Record<string, string> = { username, password, invite_code: inviteCode }
+  if (email) payload.email = email
+  const res = await request('/signup', { method: 'POST', body: JSON.stringify(payload) })
+  await throwIfError(res)
+  const body = await res.json()
+  return { accessToken: body.access_token }
+}
+
 export async function refresh(): Promise<{ accessToken: string } | null> {
   const res = await request('/refresh', { method: 'POST' })
   if (!res.ok) return null

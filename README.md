@@ -70,6 +70,21 @@ separate, persistent Docker volume from the one the test suites use).
 Ctrl+C stops both servers; the database keeps running
 (`docker compose stop dev-db` if you want to stop that too).
 
+### Creating an account
+
+Signup is invite-only. Mint a single-use code, then use it on the
+`/signup` page:
+
+```
+python3 mint_invite.py                 # never expires
+python3 mint_invite.py --expires-days 7
+```
+
+There is no HTTP endpoint that creates invite codes — only this script.
+Behind a reverse proxy in production, set `TRUSTED_PROXY_COUNT` to the
+number of trusted proxies so the login/signup rate limiter keys on the
+real client IP rather than the proxy's.
+
 ### Running the test suites
 
 Backend (pytest, against a separate, disposable test database):

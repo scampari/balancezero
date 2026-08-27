@@ -5,11 +5,20 @@ from functools import wraps
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, jwt_required
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
-from models import RefreshToken, User, db
+from models import AuthThrottle, InviteCode, RefreshToken, User, db
 
 REFRESH_TOKEN_TTL = timedelta(days=30)
+
+_MIN_PASSWORD_LEN = 10
+_MAX_PASSWORD_LEN = 128  # upper bound guards the hash cost against a huge input
+
+# (max attempts, window) per client IP — see spec/signup.md's rate-limiting
+# section. Both successful and failed attempts count; the point is to bound
+# brute force, not to lock accounts.
+_LOGIN_RATE_LIMIT = (10, timedelta(minutes=15))
+_SIGNUP_RATE_LIMIT = (5, timedelta(minutes=60))
 
 auth_bp = Blueprint("auth_api", __name__, url_prefix="/api")
 
@@ -103,8 +112,58 @@ def require_trusted_origin(view):
     return wrapped
 
 
+def _client_ip():
+    """Client address for rate-limit keying. Behind the k3s/Tailscale
+    ingress, ProxyFix (gated by TRUSTED_PROXY_COUNT in app.py) rewrites
+    request.remote_addr to the real client; with the default of 0 this is
+    the direct peer, exactly as before this slice."""
+    return request.remote_addr or "unknown"
+
+
+def _rate_limit_ok(scope, limit):
+    """Fixed-window counter per (scope, client-IP). Returns False when the
+    caller is over the limit for the current window. Both successful and
+    failed attempts are counted — see spec/signup.md."""
+    max_attempts, window = limit
+    key = _client_ip()
+    now = datetime.utcnow()
+
+    row = AuthThrottle.query.filter_by(scope=scope, key=key).first()
+    if row is None:
+        db.session.add(AuthThrottle(scope=scope, key=key, window_start=now, count=1))
+        db.session.commit()
+        return True
+
+    if now - row.window_start >= window:
+        row.window_start = now
+        row.count = 1
+        db.session.commit()
+        return True
+
+    row.count += 1
+    db.session.commit()
+    return row.count <= max_attempts
+
+
+def _validate_invite_code(code):
+    """Returns the InviteCode row iff it exists, is unused, and is not past
+    expiry — otherwise None. Callers must not distinguish the three failure
+    modes in the response (see spec/signup.md)."""
+    if not code:
+        return None
+    row = InviteCode.query.filter_by(code=code).first()
+    if row is None or row.used_at is not None:
+        return None
+    if row.expires_at is not None and row.expires_at < datetime.utcnow():
+        return None
+    return row
+
+
 @auth_bp.route("/login", methods=["POST"])
 def login():
+    if not _rate_limit_ok("login", _LOGIN_RATE_LIMIT):
+        return jsonify({"error": "too many attempts — try again later"}), 429
+
     data = request.get_json(silent=True) or {}
     username = data.get("username")
     password = data.get("password")
@@ -121,6 +180,59 @@ def login():
     response = jsonify({"access_token": access_token})
     _set_refresh_cookie(response, raw_refresh_token)
     return response, 200
+
+
+@auth_bp.route("/signup", methods=["POST"])
+def signup():
+    if not _rate_limit_ok("signup", _SIGNUP_RATE_LIMIT):
+        return jsonify({"error": "too many attempts — try again later"}), 429
+
+    data = request.get_json(silent=True) or {}
+    username = data.get("username")
+    password = data.get("password")
+    invite_code = data.get("invite_code")
+    email = data.get("email") or None
+
+    if not username or not password or not invite_code:
+        return jsonify({"error": "username, password, and invite_code are required"}), 400
+    if not _MIN_PASSWORD_LEN <= len(password) <= _MAX_PASSWORD_LEN:
+        return jsonify(
+            {"error": f"password must be between {_MIN_PASSWORD_LEN} and {_MAX_PASSWORD_LEN} characters"}
+        ), 400
+
+    invite = _validate_invite_code(invite_code)
+    if invite is None:
+        # One generic message for unknown / used / expired — a probe must not
+        # be able to tell "wrong code" from "already used" (see spec/signup.md).
+        return jsonify({"error": "invalid or expired invite code"}), 403
+
+    # Username enumeration on 409 is an accepted tradeoff — signup inherently
+    # reveals whether a name is free. The invite code is NOT consumed here, so
+    # the visitor can retry with a different name.
+    if User.query.filter_by(username=username).first() is not None:
+        return jsonify({"error": "that username is taken"}), 409
+    if email is not None and User.query.filter_by(email=email).first() is not None:
+        return jsonify({"error": "that email is already registered"}), 409
+
+    user = User(
+        username=username,
+        password_hash=generate_password_hash(password),
+        email=email,
+        is_demo=False,
+    )
+    db.session.add(user)
+    db.session.flush()  # assign user.id for the invite's used_by_user_id
+
+    invite.used_at = datetime.utcnow()
+    invite.used_by_user_id = user.id
+
+    access_token = create_access_token(identity=str(user.id))
+    raw_refresh_token = _issue_refresh_token(user.id, commit=False)
+    db.session.commit()
+
+    response = jsonify({"access_token": access_token})
+    _set_refresh_cookie(response, raw_refresh_token)
+    return response, 201
 
 
 @auth_bp.route("/refresh", methods=["POST"])
