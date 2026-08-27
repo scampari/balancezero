@@ -47,12 +47,37 @@ class Category(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     name = db.Column(db.String(120), nullable=False)
     position = db.Column(db.Integer, nullable=False, default=0)
+    # Optional, two levels only (a subcategory cannot itself be a parent —
+    # enforced in budget_api.py, not at the DB layer). Purely organizational:
+    # a category with a parent is still independently allocatable and
+    # assignable to transactions, exactly like a top-level one. No budget
+    # math changes based on hierarchy.
+    parent_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    subcategories = db.relationship("Category", backref=db.backref("parent", remote_side=[id]))
 
     allocations = db.relationship("BudgetAllocation", backref="category", cascade="all, delete-orphan")
     transactions = db.relationship("Transaction", backref="category")
 
     __table_args__ = (db.UniqueConstraint("user_id", "name", name="uq_category_user_name"),)
+
+
+class CategoryTarget(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    category_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=False)
+    target_type = db.Column(db.String(10), nullable=False)  # "monthly" | "yearly" | "custom"
+    target_amount = db.Column(db.Numeric(12, 2), nullable=False)
+    # Required for "custom", forbidden for "monthly"/"yearly" — enforced in budget_api.py.
+    target_date = db.Column(db.Date, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    # Null = active. Setting a new target sets this on the prior active row
+    # instead of deleting it — supersede, not delete (see spec/budget-api.md's
+    # Notes). At most one active (superseded_at IS NULL) row per category,
+    # enforced at the application layer, not a DB constraint.
+    superseded_at = db.Column(db.DateTime, nullable=True)
+
+    category = db.relationship("Category", backref=db.backref("targets", cascade="all, delete-orphan"))
 
 
 class Transaction(db.Model):
