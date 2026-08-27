@@ -2,9 +2,11 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   type Budget,
+  type CategoryPatch,
   type TargetType,
   createCategoryWithAutoRefresh,
   getBudgetWithAutoRefresh,
+  patchCategoryWithAutoRefresh,
   setAllocationWithAutoRefresh,
   setCategoryTargetWithAutoRefresh,
 } from '../api/client'
@@ -19,21 +21,23 @@ function formatMoney(value: string): string {
 
 const CURRENT_MONTH = new Date().toISOString().slice(0, 7) + '-01'
 
+const NUM_CELL = 'w-28 shrink-0 text-right tabular-nums text-sm'
+const HEAD_CELL = 'w-28 shrink-0 text-right text-xs font-medium tracking-wide text-(--color-text-muted) uppercase'
+const MINI_BTN =
+  'rounded px-1.5 py-0.5 text-xs text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text-muted) disabled:cursor-not-allowed disabled:opacity-40'
+
 export function BudgetPage() {
   const { accessToken, setAccessToken, isAuthChecked } = useAuth()
   const navigate = useNavigate()
   const [budget, setBudget] = useState<Budget | null>(null)
   const [newCategoryName, setNewCategoryName] = useState('')
-  // '' = top-level; otherwise the parent category id as a string.
   const [newCategoryParent, setNewCategoryParent] = useState('')
   const [isCreatingCategory, setIsCreatingCategory] = useState(false)
   const [categoryError, setCategoryError] = useState<string | null>(null)
-  // Local text state per category while the user is typing an allocation,
-  // keyed by category id — lets the input hold an in-progress value
-  // (including a temporarily-invalid one like "12.") without fighting the
-  // server-confirmed value in `budget`.
+  const [manageError, setManageError] = useState<string | null>(null)
   const [allocationDrafts, setAllocationDrafts] = useState<Record<number, string>>({})
-  // Which category's target editor is open, plus its in-progress form values.
+  const [renamingId, setRenamingId] = useState<number | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
   const [targetEditorFor, setTargetEditorFor] = useState<number | null>(null)
   const [targetType, setTargetType] = useState<TargetType>('monthly')
   const [targetAmount, setTargetAmount] = useState('')
@@ -43,6 +47,17 @@ export function BudgetPage() {
 
   function loadBudget(token: string) {
     return getBudgetWithAutoRefresh(token, setAccessToken).then((data) => setBudget(data))
+  }
+
+  async function applyPatch(categoryId: number, patch: CategoryPatch) {
+    if (!accessToken) return
+    setManageError(null)
+    try {
+      await patchCategoryWithAutoRefresh(accessToken, setAccessToken, categoryId, patch)
+      await loadBudget(accessToken)
+    } catch (err) {
+      setManageError(err instanceof Error ? err.message : 'Could not update category.')
+    }
   }
 
   function openTargetEditor(category: Category) {
@@ -74,26 +89,17 @@ export function BudgetPage() {
 
   useEffect(() => {
     let cancelled = false
-
-    // Wait for AuthProvider's initial silent-refresh attempt to resolve
-    // before concluding there's no session — accessToken starts null on
-    // every mount regardless of whether a valid refresh cookie exists.
     if (!isAuthChecked) return
-
     if (!accessToken) {
       navigate('/login', { replace: true })
       return
     }
-
     loadBudget(accessToken).catch(() => {
-      // Either not a 401, or refresh itself failed — either way, not
-      // recoverable here. Send the user back to login.
       if (!cancelled) {
         setAccessToken(null)
         navigate('/login', { replace: true })
       }
     })
-
     return () => {
       cancelled = true
     }
@@ -125,9 +131,6 @@ export function BudgetPage() {
   async function handleAllocationCommit(categoryId: number) {
     const draft = allocationDrafts[categoryId]
     if (!accessToken || draft === undefined) return
-    // Clear the draft either way — on success the server value takes over,
-    // on failure we fall back to the last-known server value rather than
-    // leaving a possibly-invalid draft stuck in the field.
     setAllocationDrafts((prev) => {
       const next = { ...prev }
       delete next[categoryId]
@@ -138,85 +141,189 @@ export function BudgetPage() {
     await loadBudget(accessToken)
   }
 
+  function commitRename(categoryId: number) {
+    const name = renameDraft.trim()
+    setRenamingId(null)
+    const current = budget?.categories.find((c) => c.id === categoryId)?.name
+    if (!name || name === current) return
+    applyPatch(categoryId, { name })
+  }
+
   if (!budget) return <PageLoading />
 
   const readyToAssign = Number(budget.ready_to_assign)
-
-  // Two-level hierarchy (enforced server-side): render each top-level
-  // category followed by its own subcategories, indented. A subcategory
-  // whose parent isn't in the list (shouldn't happen) falls through to the
-  // end so it's never silently dropped.
   const topLevel = budget.categories.filter((c) => c.parent_id == null)
   const childrenOf = (parentId: number) => budget.categories.filter((c) => c.parent_id === parentId)
   const orphans = budget.categories.filter(
     (c) => c.parent_id != null && !budget.categories.some((p) => p.id === c.parent_id),
   )
+  const moveTargets = topLevel // a category can only be re-parented under a top-level one
 
-  function renderCategoryRow(category: Category, isChild: boolean) {
+  function targetLine(category: Category) {
+    const t = category.target
+    if (!t) return null
+    if (t.target_type === 'monthly') {
+      return (
+        <span className="text-xs text-(--color-text-faint)">
+          {formatMoney(t.funded)} of {formatMoney(t.target_amount)} this month
+        </span>
+      )
+    }
+    const pct = Math.round(Number(t.progress) * 100)
+    const horizon = t.target_type === 'yearly' ? 'by year-end' : `by ${t.target_date}`
+    return (
+      <div className="flex flex-1 flex-col gap-1">
+        <span className="text-xs text-(--color-text-faint)">
+          {Number(t.needed_this_month) > 0
+            ? `Assign ${formatMoney(t.needed_this_month)} more this month`
+            : 'On track — nothing needed this month'}
+          {' · '}
+          {formatMoney(t.funded)} of {formatMoney(t.target_amount)} {horizon}
+        </span>
+        <div className="h-1 w-full max-w-64 overflow-hidden rounded-full bg-(--color-border)">
+          <div
+            className="h-full rounded-full bg-(--color-accent)"
+            style={{ width: `${Math.min(100, pct)}%` }}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  function renderCategoryRow(category: Category, isChild: boolean, siblings: Category[]) {
     const available = Number(category.available)
     const draft = allocationDrafts[category.id]
+    const idx = siblings.findIndex((c) => c.id === category.id)
     return (
       <li
         key={category.id}
+        data-category={category.name}
         className={`flex flex-col gap-2 bg-(--color-surface) py-3 pr-4 transition-colors hover:bg-(--color-surface-hover) ${
           isChild ? 'pl-10' : 'pl-4'
         }`}
       >
-        <div className="flex items-center justify-between gap-4">
-          <span className={`text-sm ${isChild ? 'text-(--color-text-muted)' : 'text-(--color-text)'}`}>
-            {isChild && <span className="mr-1.5 text-(--color-text-faint)">↳</span>}
-            {category.name}
-          </span>
-          <div className="flex items-center gap-4">
-            <span
-              className={`tabular-nums w-28 text-right text-sm font-medium ${
-                available < 0 ? 'text-(--color-negative)' : 'text-(--color-text)'
-              }`}
-            >
-              {formatMoney(category.available)}
-            </span>
-            <label className="flex w-28 items-center justify-end gap-1.5">
-              <span className="text-xs text-(--color-text-faint)">$</span>
+        <div className="flex items-center gap-4">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            {isChild && <span className="text-(--color-text-faint)">↳</span>}
+            {renamingId === category.id ? (
               <input
-                type="text"
-                inputMode="decimal"
-                aria-label={`Assign amount for ${category.name}`}
-                value={draft ?? category.allocated_this_month}
-                onChange={(event) =>
-                  setAllocationDrafts((prev) => ({ ...prev, [category.id]: event.target.value }))
-                }
-                onBlur={() => handleAllocationCommit(category.id)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') event.currentTarget.blur()
+                autoFocus
+                aria-label={`Rename ${category.name}`}
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onBlur={() => commitRename(category.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur()
+                  if (e.key === 'Escape') setRenamingId(null)
                 }}
-                className="tabular-nums w-20 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-right text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                className="min-w-0 flex-1 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-0.5 text-sm text-(--color-text) outline-none focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
               />
-            </label>
+            ) : (
+              <span
+                className={`truncate text-sm ${isChild ? 'text-(--color-text-muted)' : 'text-(--color-text)'}`}
+              >
+                {category.name}
+              </span>
+            )}
           </div>
+          <span
+            className={`${NUM_CELL} ${
+              Number(category.spent_this_month) < 0 ? 'text-(--color-text)' : 'text-(--color-text-faint)'
+            }`}
+          >
+            {formatMoney(category.spent_this_month)}
+          </span>
+          <span
+            className={`${NUM_CELL} font-medium ${
+              available < 0 ? 'text-(--color-negative)' : 'text-(--color-text)'
+            }`}
+          >
+            {formatMoney(category.available)}
+          </span>
+          <label className="flex w-28 shrink-0 items-center justify-end gap-1.5">
+            <span className="text-xs text-(--color-text-faint)">$</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              aria-label={`Assign amount for ${category.name}`}
+              value={draft ?? category.allocated_this_month}
+              onChange={(event) =>
+                setAllocationDrafts((prev) => ({ ...prev, [category.id]: event.target.value }))
+              }
+              onBlur={() => handleAllocationCommit(category.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur()
+              }}
+              className="tabular-nums w-20 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-right text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+            />
+          </label>
         </div>
 
-        <div className="flex items-center justify-between gap-4">
-          <span className="text-xs text-(--color-text-faint)">
-            {category.target
-              ? `Target: ${formatMoney(category.target.monthly_target_amount)}/mo` +
-                (category.target.target_type === 'monthly'
-                  ? ''
-                  : ` (${formatMoney(category.target.target_amount)} ${
-                      category.target.target_type === 'yearly'
-                        ? 'this year'
-                        : `by ${category.target.target_date}`
-                    })`)
-              : 'No target'}
-          </span>
-          <button
-            type="button"
-            onClick={() =>
-              targetEditorFor === category.id ? setTargetEditorFor(null) : openTargetEditor(category)
-            }
-            className="rounded-md border border-(--color-border) px-2 py-1 text-xs text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover)"
-          >
-            {category.target ? 'Edit target' : 'Set target'}
-          </button>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          {targetLine(category)}
+          <div className="ml-auto flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() =>
+                targetEditorFor === category.id ? setTargetEditorFor(null) : openTargetEditor(category)
+              }
+              className={MINI_BTN}
+            >
+              {category.target ? 'Edit target' : 'Set target'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setRenameDraft(category.name)
+                setRenamingId(category.id)
+              }}
+              className={MINI_BTN}
+            >
+              Rename
+            </button>
+            <select
+              aria-label={`Move ${category.name}`}
+              value={category.parent_id ?? ''}
+              onChange={(e) =>
+                applyPatch(category.id, { parent_id: e.target.value === '' ? null : Number(e.target.value) })
+              }
+              className={`${MINI_BTN} appearance-none pr-1`}
+            >
+              <option value="">Top level</option>
+              {moveTargets
+                .filter((p) => p.id !== category.id)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    Under {p.name}
+                  </option>
+                ))}
+            </select>
+            <button
+              type="button"
+              aria-label={`Move ${category.name} up`}
+              disabled={idx <= 0}
+              onClick={() => applyPatch(category.id, { position: idx - 1 })}
+              className={MINI_BTN}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              aria-label={`Move ${category.name} down`}
+              disabled={idx < 0 || idx >= siblings.length - 1}
+              onClick={() => applyPatch(category.id, { position: idx + 1 })}
+              className={MINI_BTN}
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPatch(category.id, { archived: true })}
+              className={MINI_BTN}
+            >
+              Archive
+            </button>
+          </div>
         </div>
 
         {targetEditorFor === category.id && (
@@ -293,26 +400,43 @@ export function BudgetPage() {
           <p className="px-4 py-6 text-center text-sm text-(--color-text-faint)">No categories yet.</p>
         ) : (
           <>
-            <div className="flex items-center justify-between gap-4 border-b border-(--color-border) bg-(--color-surface) px-4 py-2">
-              <span className="text-xs font-medium tracking-wide text-(--color-text-muted) uppercase">
+            <div className="flex items-center gap-4 border-b border-(--color-border) bg-(--color-surface) px-4 py-2">
+              <span className="flex-1 text-xs font-medium tracking-wide text-(--color-text-muted) uppercase">
                 Category
               </span>
-              <div className="flex items-center gap-4">
-                <span className="w-28 text-right text-xs font-medium tracking-wide text-(--color-text-muted) uppercase">
-                  Available to Spend
-                </span>
-                <span className="w-28 pr-2 text-right text-xs font-medium tracking-wide text-(--color-text-muted) uppercase">
-                  Budgeted
-                </span>
-              </div>
+              <span className={HEAD_CELL}>Spent</span>
+              <span className={HEAD_CELL}>Available to Spend</span>
+              <span className={HEAD_CELL}>Budgeted</span>
             </div>
             <ul className="divide-y divide-(--color-border)">
-              {topLevel.map((parent) => [
-                renderCategoryRow(parent, false),
-                ...childrenOf(parent.id).map((child) => renderCategoryRow(child, true)),
-              ])}
-              {orphans.map((orphan) => renderCategoryRow(orphan, true))}
+              {topLevel.map((parent) => {
+                const kids = childrenOf(parent.id)
+                return [
+                  renderCategoryRow(parent, false, topLevel),
+                  ...kids.map((child) => renderCategoryRow(child, true, kids)),
+                ]
+              })}
+              {orphans.map((orphan) => renderCategoryRow(orphan, true, orphans))}
             </ul>
+            <div
+              data-testid="budget-totals"
+              className="flex items-center gap-4 border-t-2 border-(--color-border) bg-(--color-surface) px-4 py-2.5"
+            >
+              <span className="flex-1 text-xs font-semibold tracking-wide text-(--color-text-muted) uppercase">
+                Total
+              </span>
+              <span className={`${NUM_CELL} font-semibold text-(--color-text)`}>
+                {formatMoney(budget.totals.spent)}
+              </span>
+              <span className={`${NUM_CELL} font-semibold text-(--color-text)`}>
+                {formatMoney(budget.totals.available)}
+              </span>
+              <span className="flex w-28 shrink-0 items-center justify-end pr-2">
+                <span className="tabular-nums text-sm font-semibold text-(--color-text)">
+                  {formatMoney(budget.totals.budgeted)}
+                </span>
+              </span>
+            </div>
           </>
         )}
 
@@ -349,10 +473,47 @@ export function BudgetPage() {
           </button>
         </form>
       </div>
+
+      {manageError && (
+        <p role="alert" className="mt-2 text-sm text-(--color-negative)">
+          {manageError}
+        </p>
+      )}
       {categoryError && (
         <p role="alert" className="mt-2 text-sm text-(--color-negative)">
           {categoryError}
         </p>
+      )}
+
+      {budget.archived_categories.length > 0 && (
+        <details className="mt-6 overflow-hidden rounded-xl border border-(--color-border)">
+          <summary className="cursor-pointer bg-(--color-surface) px-4 py-2.5 text-xs font-medium tracking-wide text-(--color-text-muted) uppercase">
+            Archived ({budget.archived_categories.length})
+          </summary>
+          <ul className="divide-y divide-(--color-border)">
+            {budget.archived_categories.map((category) => (
+              <li
+                key={category.id}
+                data-archived-category={category.name}
+                className="flex items-center gap-4 bg-(--color-surface) px-4 py-3"
+              >
+                <span className="flex-1 truncate text-sm text-(--color-text-muted)">
+                  {category.name}
+                </span>
+                <span className={`${NUM_CELL} text-(--color-text-faint)`}>
+                  {formatMoney(category.available)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => applyPatch(category.id, { archived: false })}
+                  className={MINI_BTN}
+                >
+                  Unarchive
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </AppShell>
   )

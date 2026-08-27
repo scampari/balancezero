@@ -53,6 +53,12 @@ class Category(db.Model):
     # assignable to transactions, exactly like a top-level one. No budget
     # math changes based on hierarchy.
     parent_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True)
+    # Soft-hide from the live budget view without deleting — deleting a category
+    # would orphan its transactions' and allocations' history. Archived
+    # categories keep every row they own; they're just excluded from
+    # GET /api/budget's active list (returned separately as archived_categories)
+    # and from the totals. Enforced in budget_api.py, not at the DB layer.
+    archived = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     subcategories = db.relationship("Category", backref=db.backref("parent", remote_side=[id]))

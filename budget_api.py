@@ -6,6 +6,7 @@ from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import IntegrityError
 
 from api_helpers import current_user_id as _current_user_id
+from api_helpers import month_bounds as _month_bounds
 from api_helpers import parse_month as _parse_month
 from models import Account, BudgetAllocation, Category, CategoryTarget, Transaction, db
 
@@ -42,15 +43,22 @@ def _months_remaining(today, through_year, through_month):
     return (through_year - today.year) * 12 + (through_month - today.month) + 1
 
 
+def _target_months_remaining(target):
+    """Whole calendar months from the current month through the target's
+    horizon, inclusive of both ends. `monthly` has a one-month horizon."""
+    if target.target_type == "monthly":
+        return 1
+    today = date.today()
+    if target.target_type == "yearly":
+        return _months_remaining(today, today.year, 12)
+    return _months_remaining(today, target.target_date.year, target.target_date.month)
+
+
 def _serialize_target(target):
+    months = _target_months_remaining(target)
     if target.target_type == "monthly":
         monthly_target_amount = target.target_amount
     else:
-        today = date.today()
-        if target.target_type == "yearly":
-            months = _months_remaining(today, today.year, 12)
-        else:  # custom
-            months = _months_remaining(today, target.target_date.year, target.target_date.month)
         monthly_target_amount = (target.target_amount / months).quantize(Decimal("0.01"))
 
     return {
@@ -60,6 +68,41 @@ def _serialize_target(target):
         "target_amount": str(target.target_amount),
         "target_date": target.target_date.isoformat() if target.target_date else None,
         "monthly_target_amount": str(monthly_target_amount),
+    }
+
+
+def _target_budget_view(target, allocated_this_month, available):
+    """The GET /api/budget per-category `target` embed: the four baseline
+    fields (kept identical to _serialize_target for back-compat) plus
+    progress toward the goal.
+
+    `funded` is what's already set aside toward the target — the category's
+    rolled-over envelope balance for a dated goal, or this month's assignment
+    for a recurring monthly goal. `needed_this_month` is what to assign now
+    to stay on pace: the shortfall spread over the months remaining.
+    """
+    base = _serialize_target(target)
+    months = _target_months_remaining(target)
+    target_amount = target.target_amount
+
+    if target.target_type == "monthly":
+        funded = allocated_this_month
+        needed = max(Decimal("0"), target_amount - funded)
+    else:
+        funded = max(Decimal("0"), available)
+        needed = max(Decimal("0"), (target_amount - funded) / months)
+
+    progress = min(Decimal("1"), funded / target_amount) if target_amount > 0 else Decimal("0")
+
+    return {
+        "target_type": base["target_type"],
+        "target_amount": base["target_amount"],
+        "target_date": base["target_date"],
+        "monthly_target_amount": base["monthly_target_amount"],
+        "months_remaining": months,
+        "funded": str(funded),
+        "needed_this_month": str(needed.quantize(Decimal("0.01"))),
+        "progress": str(progress.quantize(Decimal("0.0001"))),
     }
 
 
@@ -73,6 +116,24 @@ def _get_owned_category(category_id):
     if category.user_id != _current_user_id():
         return None, (jsonify({"error": "forbidden"}), 403)
     return category, None
+
+
+def _sibling_group(user_id, parent_id):
+    """The user's categories that share a parent (parent_id None = top level),
+    ordered as they'd appear in the budget view."""
+    return (
+        Category.query.filter_by(user_id=user_id, parent_id=parent_id)
+        .order_by(Category.position, Category.id)
+        .all()
+    )
+
+
+def _pack_siblings(user_id, parent_id):
+    """Renumber a sibling group's positions to a gap-free 0..n-1 sequence,
+    preserving current order. Called after any reparent or reorder so
+    positions never drift or collide."""
+    for index, sibling in enumerate(_sibling_group(user_id, parent_id)):
+        sibling.position = index
 
 
 @budget_bp.route("/categories", methods=["POST"])
@@ -103,6 +164,106 @@ def create_category():
         return jsonify({"error": "a category with this name already exists"}), 409
 
     return jsonify({"id": category.id, "name": category.name, "parent_id": category.parent_id}), 201
+
+
+def _serialize_category(category):
+    return {
+        "id": category.id,
+        "name": category.name,
+        "parent_id": category.parent_id,
+        "archived": category.archived,
+        "position": category.position,
+    }
+
+
+@budget_bp.route("/categories/<int:category_id>", methods=["PATCH"])
+@jwt_required()
+def update_category(category_id):
+    category, error = _get_owned_category(category_id)
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    recognized = {"name", "parent_id", "archived", "position"}
+    if not recognized & data.keys():
+        return jsonify({"error": "provide at least one of name, parent_id, archived, position"}), 400
+
+    user_id = _current_user_id()
+    has_children = Category.query.filter_by(parent_id=category.id).first() is not None
+    old_parent_id = category.parent_id
+
+    if "name" in data:
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        category.name = name
+
+    if "parent_id" in data:
+        new_parent_id = data["parent_id"]
+        if new_parent_id is not None:
+            if new_parent_id == category.id:
+                return jsonify({"error": "a category cannot be its own parent"}), 400
+            parent = db.session.get(Category, new_parent_id)
+            if parent is None:
+                return jsonify({"error": "parent not found"}), 400
+            if parent.user_id != user_id:
+                return jsonify({"error": "forbidden"}), 403
+            if parent.parent_id is not None:
+                return jsonify({"error": "a subcategory cannot itself have subcategories"}), 400
+            if has_children:
+                return jsonify({"error": "a category with subcategories cannot become a subcategory"}), 400
+        category.parent_id = new_parent_id
+
+    if "archived" in data:
+        want_archived = bool(data["archived"])
+        if want_archived and not category.archived:
+            active_child = Category.query.filter_by(
+                parent_id=category.id, archived=False
+            ).first()
+            if active_child is not None:
+                return jsonify(
+                    {"error": "archive or move this category's subcategories first"}
+                ), 400
+        if not want_archived and category.archived:
+            if category.parent_id is not None:
+                parent = db.session.get(Category, category.parent_id)
+                if parent is not None and parent.archived:
+                    return jsonify({"error": "unarchive the parent category first"}), 400
+        category.archived = want_archived
+
+    if "position" in data:
+        try:
+            requested_position = int(data["position"])
+        except (TypeError, ValueError):
+            db.session.rollback()
+            return jsonify({"error": "position must be an integer"}), 400
+    else:
+        requested_position = None
+
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "a category with this name already exists"}), 409
+
+    reparented = "parent_id" in data and category.parent_id != old_parent_id
+    if reparented:
+        # Land at the end of the destination group first (so a bare reparent
+        # is deterministic), and normalize the group we left.
+        category.position = len(_sibling_group(user_id, category.parent_id))
+        _pack_siblings(user_id, old_parent_id)
+
+    if requested_position is not None:
+        group = [c for c in _sibling_group(user_id, category.parent_id) if c.id != category.id]
+        index = max(0, min(requested_position, len(group)))
+        group.insert(index, category)
+        for i, sibling in enumerate(group):
+            sibling.position = i
+    elif reparented:
+        _pack_siblings(user_id, category.parent_id)
+
+    db.session.commit()
+    return jsonify(_serialize_category(category)), 200
 
 
 @budget_bp.route("/categories/<int:category_id>/target", methods=["POST"])
@@ -205,6 +366,7 @@ def get_budget():
     else:
         month = date.today().replace(day=1)
 
+    start, end = _month_bounds(month)
     user_id = _current_user_id()
 
     income_total = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
@@ -215,8 +377,12 @@ def get_budget():
     ).scalar() or Decimal("0")
     ready_to_assign = income_total - total_allocated
 
-    categories = Category.query.filter_by(user_id=user_id).order_by(Category.position).all()
-    result = []
+    categories = (
+        Category.query.filter_by(user_id=user_id).order_by(Category.position, Category.id).all()
+    )
+    active = []
+    archived = []
+    totals = {"budgeted": Decimal("0"), "spent": Decimal("0"), "available": Decimal("0")}
     for cat in categories:
         allocated_this_month = db.session.query(BudgetAllocation.allocated_amount).filter_by(
             category_id=cat.id, month=month
@@ -224,26 +390,51 @@ def get_budget():
         allocated_total = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter_by(
             category_id=cat.id
         ).scalar() or Decimal("0")
-        spent_total = db.session.query(db.func.sum(Transaction.amount)).filter_by(category_id=cat.id).scalar() or Decimal("0")
+        spent_total = db.session.query(db.func.sum(Transaction.amount)).filter_by(
+            category_id=cat.id
+        ).scalar() or Decimal("0")
+        spent_this_month = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
+            Transaction.category_id == cat.id,
+            Account.user_id == user_id,
+            Transaction.posted_at >= start,
+            Transaction.posted_at < end,
+        ).scalar() or Decimal("0")
+        available = allocated_total + spent_total
+
         active_target = CategoryTarget.query.filter_by(category_id=cat.id, superseded_at=None).first()
-        target = None
-        if active_target is not None:
-            full = _serialize_target(active_target)
-            target = {
-                "target_type": full["target_type"],
-                "target_amount": full["target_amount"],
-                "target_date": full["target_date"],
-                "monthly_target_amount": full["monthly_target_amount"],
-            }
-        result.append(
-            {
-                "id": cat.id,
-                "name": cat.name,
-                "parent_id": cat.parent_id,
-                "allocated_this_month": str(allocated_this_month),
-                "available": str(allocated_total + spent_total),
-                "target": target,
-            }
+        target = (
+            _target_budget_view(active_target, allocated_this_month, available)
+            if active_target is not None
+            else None
         )
 
-    return jsonify({"month": month.isoformat(), "ready_to_assign": str(ready_to_assign), "categories": result}), 200
+        entry = {
+            "id": cat.id,
+            "name": cat.name,
+            "parent_id": cat.parent_id,
+            "position": cat.position,
+            "archived": cat.archived,
+            "allocated_this_month": str(allocated_this_month),
+            "spent_this_month": str(spent_this_month),
+            "available": str(available),
+            "target": target,
+        }
+        if cat.archived:
+            archived.append(entry)
+        else:
+            active.append(entry)
+            totals["budgeted"] += allocated_this_month
+            totals["spent"] += spent_this_month
+            totals["available"] += available
+
+    archived.sort(key=lambda e: e["name"].lower())
+
+    return jsonify(
+        {
+            "month": month.isoformat(),
+            "ready_to_assign": str(ready_to_assign),
+            "categories": active,
+            "archived_categories": archived,
+            "totals": {key: str(value) for key, value in totals.items()},
+        }
+    ), 200

@@ -48,21 +48,57 @@ export interface CategoryTarget {
   target_amount: string
   target_date: string | null
   monthly_target_amount: string
+  months_remaining: number
+  funded: string
+  needed_this_month: string
+  progress: string
 }
 
 export interface BudgetCategory {
   id: number
   name: string
   parent_id: number | null
+  position: number
+  archived: boolean
   allocated_this_month: string
+  spent_this_month: string
   available: string
   target: CategoryTarget | null
+}
+
+export interface BudgetTotals {
+  budgeted: string
+  spent: string
+  available: string
 }
 
 export interface Budget {
   month: string
   ready_to_assign: string
+  totals: BudgetTotals
   categories: BudgetCategory[]
+  archived_categories: BudgetCategory[]
+}
+
+export interface CategoryPatch {
+  name?: string
+  parent_id?: number | null
+  archived?: boolean
+  position?: number
+}
+
+export async function patchCategory(
+  accessToken: string,
+  categoryId: number,
+  patch: CategoryPatch,
+): Promise<{ id: number; name: string; parent_id: number | null; archived: boolean; position: number }> {
+  const res = await request(
+    `/categories/${categoryId}`,
+    { method: 'PATCH', body: JSON.stringify(patch) },
+    accessToken,
+  )
+  await throwIfError(res)
+  return res.json()
 }
 
 export async function getBudget(accessToken: string, month?: string): Promise<Budget> {
@@ -299,6 +335,19 @@ export function createCategoryWithAutoRefresh(
   parentId?: number | null,
 ): Promise<{ id: number; name: string; parent_id: number | null }> {
   return withAutoRefresh((token) => createCategory(token, name, parentId), accessToken, onTokenRefreshed)
+}
+
+export function patchCategoryWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  categoryId: number,
+  patch: CategoryPatch,
+): Promise<{ id: number; name: string; parent_id: number | null; archived: boolean; position: number }> {
+  return withAutoRefresh(
+    (token) => patchCategory(token, categoryId, patch),
+    accessToken,
+    onTokenRefreshed,
+  )
 }
 
 export function setAllocationWithAutoRefresh(

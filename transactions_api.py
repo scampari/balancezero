@@ -4,6 +4,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from api_helpers import current_user_id as _current_user_id
+from api_helpers import month_bounds as _month_bounds
 from api_helpers import parse_month as _parse_month
 from models import Account, Category, Transaction, db
 
@@ -22,11 +23,6 @@ def _serialize(transaction, category_name):
         "pending": transaction.pending,
         "is_income": transaction.is_income,
     }
-
-
-def _month_bounds(month):
-    next_month = date(month.year + 1, 1, 1) if month.month == 12 else date(month.year, month.month + 1, 1)
-    return month, next_month
 
 
 @transactions_bp.route("/transactions", methods=["GET"])

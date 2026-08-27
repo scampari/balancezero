@@ -830,3 +830,411 @@ def test_get_budget_category_with_active_target_includes_target_shape(client, te
     assert entry["target"]["target_amount"] == "200.00"
     assert entry["target"]["target_date"] is None
     assert entry["target"]["monthly_target_amount"] == "200.00"
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/categories/<id> — rename / reparent / archive / reorder (006)
+# ---------------------------------------------------------------------------
+
+
+def _new_category(client, auth_headers, name, parent_id=None):
+    payload = {"name": name}
+    if parent_id is not None:
+        payload["parent_id"] = parent_id
+    return client.post("/api/categories", json=payload, headers=auth_headers).get_json()
+
+
+def _patch_category(client, auth_headers, category_id, **patch):
+    return client.patch(f"/api/categories/{category_id}", json=patch, headers=auth_headers)
+
+
+def test_patch_category_renames(client, test_user, auth_headers):
+    # Arrange
+    cid = _new_category(client, auth_headers, "Groceris")["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, name="Groceries")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.get_json()["name"] == "Groceries"
+    assert db.session.get(Category, cid).name == "Groceries"
+
+
+def test_patch_category_rename_to_duplicate_returns_409(client, test_user, auth_headers):
+    # Arrange
+    _new_category(client, auth_headers, "Rent")
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, name="Rent")
+
+    # Assert
+    assert response.status_code == 409
+    assert db.session.get(Category, cid).name == "Groceries"
+
+
+def test_patch_category_rename_to_empty_returns_400(client, test_user, auth_headers):
+    # Arrange
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, name="   ")
+
+    # Assert
+    assert response.status_code == 400
+
+
+def test_patch_category_reparents_under_top_level(client, test_user, auth_headers):
+    # Arrange
+    parent = _new_category(client, auth_headers, "Food")["id"]
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, parent_id=parent)
+
+    # Assert
+    assert response.status_code == 200
+    assert response.get_json()["parent_id"] == parent
+    assert db.session.get(Category, cid).parent_id == parent
+
+
+def test_patch_category_reparent_to_null_promotes_to_top_level(client, test_user, auth_headers):
+    # Arrange
+    parent = _new_category(client, auth_headers, "Food")["id"]
+    cid = _new_category(client, auth_headers, "Groceries", parent_id=parent)["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, parent_id=None)
+
+    # Assert
+    assert response.status_code == 200
+    assert response.get_json()["parent_id"] is None
+    assert db.session.get(Category, cid).parent_id is None
+
+
+def test_patch_category_reparent_to_self_returns_400(client, test_user, auth_headers):
+    # Arrange
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, parent_id=cid)
+
+    # Assert
+    assert response.status_code == 400
+
+
+def test_patch_category_reparent_under_a_subcategory_returns_400(client, test_user, auth_headers):
+    # Arrange — two levels only
+    parent = _new_category(client, auth_headers, "Food")["id"]
+    sub = _new_category(client, auth_headers, "Groceries", parent_id=parent)["id"]
+    cid = _new_category(client, auth_headers, "Dining")["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, parent_id=sub)
+
+    # Assert
+    assert response.status_code == 400
+
+
+def test_patch_category_reparent_a_category_that_has_children_returns_400(client, test_user, auth_headers):
+    # Arrange
+    other_top = _new_category(client, auth_headers, "Fixed")["id"]
+    parent = _new_category(client, auth_headers, "Food")["id"]
+    _new_category(client, auth_headers, "Groceries", parent_id=parent)
+
+    # Act — "Food" already has a child, cannot itself become a subcategory
+    response = _patch_category(client, auth_headers, parent, parent_id=other_top)
+
+    # Assert
+    assert response.status_code == 400
+
+
+def test_patch_category_reparent_to_another_users_category_returns_403(client, test_user, auth_headers):
+    # Arrange
+    other_user = User(username="cat-other", password_hash=generate_password_hash("irrelevant"))
+    db.session.add(other_user)
+    db.session.commit()
+    other_parent = Category(user_id=other_user.id, name="TheirFood")
+    db.session.add(other_parent)
+    db.session.commit()
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, parent_id=other_parent.id)
+
+    # Assert
+    assert response.status_code == 403
+
+
+def test_patch_category_archives(client, test_user, auth_headers):
+    # Arrange
+    cid = _new_category(client, auth_headers, "Old Category")["id"]
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, archived=True)
+
+    # Assert
+    assert response.status_code == 200
+    assert response.get_json()["archived"] is True
+    assert db.session.get(Category, cid).archived is True
+
+
+def test_patch_category_archive_parent_with_active_child_returns_400(client, test_user, auth_headers):
+    # Arrange
+    parent = _new_category(client, auth_headers, "Food")["id"]
+    _new_category(client, auth_headers, "Groceries", parent_id=parent)
+
+    # Act
+    response = _patch_category(client, auth_headers, parent, archived=True)
+
+    # Assert
+    assert response.status_code == 400
+    assert db.session.get(Category, parent).archived is False
+
+
+def test_patch_category_unarchives(client, test_user, auth_headers):
+    # Arrange
+    cid = _new_category(client, auth_headers, "Old Category")["id"]
+    _patch_category(client, auth_headers, cid, archived=True)
+
+    # Act
+    response = _patch_category(client, auth_headers, cid, archived=False)
+
+    # Assert
+    assert response.status_code == 200
+    assert response.get_json()["archived"] is False
+    assert db.session.get(Category, cid).archived is False
+
+
+def test_patch_category_unarchive_child_while_parent_archived_returns_400(client, test_user, auth_headers):
+    # Arrange — archive the child first, then the parent
+    parent = _new_category(client, auth_headers, "Food")["id"]
+    child = _new_category(client, auth_headers, "Groceries", parent_id=parent)["id"]
+    _patch_category(client, auth_headers, child, archived=True)
+    _patch_category(client, auth_headers, parent, archived=True)
+
+    # Act
+    response = _patch_category(client, auth_headers, child, archived=False)
+
+    # Assert
+    assert response.status_code == 400
+    assert db.session.get(Category, child).archived is True
+
+
+def test_patch_category_archived_absent_from_categories_present_in_archived_list(client, test_user, auth_headers):
+    # Arrange
+    keep = _new_category(client, auth_headers, "Groceries")["id"]
+    gone = _new_category(client, auth_headers, "Defunct")["id"]
+    _patch_category(client, auth_headers, gone, archived=True)
+
+    # Act
+    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+
+    # Assert
+    active_ids = {c["id"] for c in body["categories"]}
+    archived_ids = {c["id"] for c in body["archived_categories"]}
+    assert keep in active_ids
+    assert gone not in active_ids
+    assert gone in archived_ids
+
+
+def test_patch_category_position_reorders_siblings(client, test_user, auth_headers):
+    # Arrange — three top-level categories in creation order
+    a = _new_category(client, auth_headers, "Alpha")["id"]
+    b = _new_category(client, auth_headers, "Bravo")["id"]
+    c = _new_category(client, auth_headers, "Charlie")["id"]
+
+    # Act — move Charlie to the front
+    response = _patch_category(client, auth_headers, c, position=0)
+
+    # Assert
+    assert response.status_code == 200
+    order = [cat["id"] for cat in client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()["categories"]]
+    assert order == [c, a, b]
+    # positions packed gap-free
+    positions = sorted(db.session.get(Category, x).position for x in (a, b, c))
+    assert positions == [0, 1, 2]
+
+
+def test_patch_category_no_recognized_fields_returns_400(client, test_user, auth_headers):
+    # Arrange
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act
+    response = client.patch(f"/api/categories/{cid}", json={"color": "blue"}, headers=auth_headers)
+
+    # Assert
+    assert response.status_code == 400
+
+
+def test_patch_category_without_token_returns_401(client, test_user, auth_headers):
+    # Arrange
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act
+    response = client.patch(f"/api/categories/{cid}", json={"name": "X"})
+
+    # Assert
+    assert response.status_code == 401
+
+
+def test_patch_category_nonexistent_returns_404(client, test_user, auth_headers):
+    # Act
+    response = _patch_category(client, auth_headers, 999999, name="X")
+
+    # Assert
+    assert response.status_code == 404
+
+
+def test_patch_category_another_users_category_returns_403(client, test_user, auth_headers):
+    # Arrange
+    other_user = User(username="cat-other2", password_hash=generate_password_hash("irrelevant"))
+    db.session.add(other_user)
+    db.session.commit()
+    theirs = Category(user_id=other_user.id, name="Theirs")
+    db.session.add(theirs)
+    db.session.commit()
+
+    # Act
+    response = _patch_category(client, auth_headers, theirs.id, name="Mine")
+
+    # Assert
+    assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET /api/budget — spent_this_month, totals, target progress (006)
+# ---------------------------------------------------------------------------
+
+
+def _account(user_id, name="Checking"):
+    from models import Account
+
+    account = Account(user_id=user_id, name=name)
+    db.session.add(account)
+    db.session.commit()
+    return account
+
+
+def _txn(account_id, posted_at, amount, category_id=None, description="txn"):
+    from decimal import Decimal
+
+    from models import Transaction
+
+    db.session.add(
+        Transaction(
+            account_id=account_id,
+            category_id=category_id,
+            posted_at=posted_at,
+            amount=Decimal(amount),
+            description=description,
+        )
+    )
+    db.session.commit()
+
+
+def _prev_month_date():
+    today = date.today().replace(day=1)
+    return date(today.year - 1, 12, 1) if today.month == 1 else date(today.year, today.month - 1, 1)
+
+
+def _budget_entry(client, auth_headers, category_id, month=CURRENT_MONTH):
+    body = client.get(f"/api/budget?month={month}", headers=auth_headers).get_json()
+    return next(c for c in body["categories"] if c["id"] == category_id)
+
+
+def test_get_budget_spent_this_month_sums_only_the_viewed_month(client, test_user, auth_headers):
+    # Arrange
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "-40.00", category_id=cid)
+    _txn(account.id, date.today().replace(day=1), "-10.00", category_id=cid)
+    _txn(account.id, _prev_month_date(), "-99.00", category_id=cid)
+
+    # Act / Assert
+    entry = _budget_entry(client, auth_headers, cid)
+    assert Decimal(entry["spent_this_month"]) == Decimal("-50.00")
+
+
+def test_get_budget_spent_this_month_is_zero_without_transactions(client, test_user, auth_headers):
+    # Arrange
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act / Assert
+    entry = _budget_entry(client, auth_headers, cid)
+    assert Decimal(entry["spent_this_month"]) == Decimal("0")
+
+
+def test_get_budget_totals_sum_active_categories_and_exclude_archived(client, test_user, auth_headers):
+    # Arrange
+    from decimal import Decimal
+
+    keep = _new_category(client, auth_headers, "Groceries")["id"]
+    gone = _new_category(client, auth_headers, "Defunct")["id"]
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "-30.00", category_id=keep)
+    _txn(account.id, date.today().replace(day=1), "-500.00", category_id=gone)
+    client.post(f"/api/categories/{keep}/allocations", json={"month": CURRENT_MONTH, "amount": "100.00"}, headers=auth_headers)
+    client.post(f"/api/categories/{gone}/allocations", json={"month": CURRENT_MONTH, "amount": "999.00"}, headers=auth_headers)
+    _patch_category(client, auth_headers, gone, archived=True)
+
+    # Act
+    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+
+    # Assert — only "Groceries" counts
+    assert Decimal(body["totals"]["budgeted"]) == Decimal("100.00")
+    assert Decimal(body["totals"]["spent"]) == Decimal("-30.00")
+    assert Decimal(body["totals"]["available"]) == Decimal("70.00")
+
+
+def test_get_budget_yearly_target_needed_this_month_accounts_for_funded(client, test_user, auth_headers):
+    # Arrange — yearly $1200 target, envelope already holds $200 (allocated).
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Car Repair")["id"]
+    _set_target(client, auth_headers, cid, "yearly", "1200.00")
+    client.post(f"/api/categories/{cid}/allocations", json={"month": CURRENT_MONTH, "amount": "200.00"}, headers=auth_headers)
+    months = _months_remaining_through_year_end(date.today())
+
+    # Act
+    entry = _budget_entry(client, auth_headers, cid)
+
+    # Assert
+    assert entry["target"]["months_remaining"] == months
+    assert Decimal(entry["target"]["funded"]) == Decimal("200.00")
+    expected = (Decimal("1200.00") - Decimal("200.00")) / months
+    assert Decimal(entry["target"]["needed_this_month"]) == expected.quantize(Decimal("0.01"))
+
+
+def test_get_budget_target_needed_this_month_is_zero_when_fully_funded(client, test_user, auth_headers):
+    # Arrange
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Vacation")["id"]
+    _set_target(client, auth_headers, cid, "yearly", "300.00")
+    client.post(f"/api/categories/{cid}/allocations", json={"month": CURRENT_MONTH, "amount": "500.00"}, headers=auth_headers)
+
+    # Act
+    entry = _budget_entry(client, auth_headers, cid)
+
+    # Assert
+    assert Decimal(entry["target"]["needed_this_month"]) == Decimal("0")
+    assert Decimal(entry["target"]["progress"]) == Decimal("1")
+
+
+def test_get_budget_monthly_target_months_remaining_is_one(client, test_user, auth_headers):
+    # Arrange
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+    _set_target(client, auth_headers, cid, "monthly", "400.00")
+
+    # Act
+    entry = _budget_entry(client, auth_headers, cid)
+
+    # Assert
+    assert entry["target"]["months_remaining"] == 1
+    assert entry["target"]["needed_this_month"] == "400.00"
