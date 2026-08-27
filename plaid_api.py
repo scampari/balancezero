@@ -324,6 +324,15 @@ def _within_import_window(plaid_transaction, item):
     return posted >= item.import_cutoff
 
 
+def _should_import(plaid_transaction, item):
+    """Gate for `added` / `modified` entries. Skips a transaction while
+    Plaid still marks it `pending` — it's pulled in only once it settles
+    (arrives again as non-pending, either as a `modified` on the same id or
+    a fresh `added` linked by `pending_transaction_id`). Also enforces the
+    fresh-connection import cutoff. See spec/plaid-sync.md."""
+    return not plaid_transaction["pending"] and _within_import_window(plaid_transaction, item)
+
+
 def _is_mutation_during_pagination(exception):
     """Plaid raises this specific ApiException when the Item's underlying
     data changes mid-pagination (common right after connect, while the
@@ -384,13 +393,13 @@ def _sync_one_item(user, item):
             return account_by_plaid_id[plaid_account_id]
 
         for plaid_transaction in response["added"]:
-            if not _within_import_window(plaid_transaction, item):
+            if not _should_import(plaid_transaction, item):
                 continue
             _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache)
             counters["transactions_added"] += 1
 
         for plaid_transaction in response["modified"]:
-            if not _within_import_window(plaid_transaction, item):
+            if not _should_import(plaid_transaction, item):
                 continue
             _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache)
             counters["transactions_modified"] += 1

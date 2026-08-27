@@ -289,3 +289,11 @@ server-side logging of the swallowed exception in `sync()`.
   per-sync `description -> category_id` cache. Only on creation — a
   `modified` upsert never re-categorizes, so a user's filing survives.
   `tests/test_plaid_sync.py` +2.
+- 015 (2026-08-27) — skip pending until posted. `_should_import` (wraps
+  `_within_import_window`) drops any `added` / `modified` entry whose Plaid
+  `pending` flag is true — it isn't imported until it settles and arrives
+  again as non-pending (a `modified` on the same `transaction_id`, or a
+  fresh `added` linked by `pending_transaction_id`). Skipped entries don't
+  count toward `transactions_added` / `transactions_modified`. Synced rows
+  are therefore always `pending = false`. `removed` for a never-imported
+  pending entry stays a no-op. `tests/test_plaid_sync.py` +2.
