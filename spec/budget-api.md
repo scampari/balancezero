@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: built
 depends_on: [auth.md]
 ---
 
@@ -166,3 +166,4 @@ no budget-math change based on hierarchy).
 - 005 (2026-08-26) — added § POST/GET /api/categories/<id>/target (category budget targets: monthly/yearly/custom, superseded-not-deleted history) and changed `ready_to_assign` to read `Transaction.is_income` instead of implicit uncategorized-inflow. Second half of `changes/005-budget-targets-and-tbb/plan.md`, paired with `spec/transactions.md`'s `is_income` toggle. Not yet built.
 - 005 (2026-08-26) — § POST/GET /api/categories/<id>/target built. New `CategoryTarget` model + migration (`e6875d83ae67`); `budget_api.py` gains `set_target`/`get_target`. All 22 target tests green, 92/92 full suite (9 skipped — Plaid sandbox tests requiring real credentials). `ready_to_assign`/`is_income` half of this slice (second half, paired with `spec/transactions.md`) not yet built — status stays `in-progress`.
 - 005 (2026-08-26) — `ready_to_assign`/`is_income` + budget-view `target` tests locked: 4 tests in `tests/test_budget_api.py`, all confirmed red. Depends on `spec/transactions.md`'s new `Transaction.is_income` column + migration `a1b2c3d4e5f6` (added with that spec's test commit). No `get_budget` logic changed — `ready_to_assign` still uses the old uncategorized-inflow formula and the per-category shape still omits `target`; the build closes both. Status stays `in-progress`.
+- 005 (2026-08-26) — built. `get_budget`: `ready_to_assign` now sums `Transaction.amount` where `is_income` is true (joined through the user's accounts) minus total allocated; each per-category entry gains a `target` field (`null`, or the active `CategoryTarget` trimmed to `target_type`/`target_amount`/`target_date`/`monthly_target_amount`). All 4 tests green; 103/103 full suite (9 skipped — Plaid sandbox). Both halves of slice 005 built — spec status → built.

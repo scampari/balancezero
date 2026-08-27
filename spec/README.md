@@ -7,9 +7,9 @@ YNAB-style zero-based budgeting app. See `context/mvp-scope.md` for full feature
 | Spec | Status | Depends on |
 |---|---|---|
 | `auth.md` | built | — |
-| `budget-api.md` | in-progress (category targets + `ready_to_assign` change) | auth |
+| `budget-api.md` | built | auth |
 | `frontend-app.md` | built | auth, budget-api |
-| `transactions.md` | in-progress (`is_income` toggle) | auth, budget-api |
+| `transactions.md` | built | auth, budget-api |
 | `transactions-ui.md` | built | transactions, frontend-app |
 | `simplefin-connect.md` | superseded by `plaid-connect.md` | auth |
 | `simplefin-sync.md` | superseded by `plaid-sync.md` | simplefin-connect |

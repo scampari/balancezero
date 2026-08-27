@@ -207,13 +207,13 @@ def get_budget():
 
     user_id = _current_user_id()
 
-    uncategorized_inflow = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
-        Account.user_id == user_id, Transaction.category_id.is_(None)
+    income_total = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
+        Account.user_id == user_id, Transaction.is_income.is_(True)
     ).scalar() or Decimal("0")
     total_allocated = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
         BudgetAllocation.user_id == user_id
     ).scalar() or Decimal("0")
-    ready_to_assign = uncategorized_inflow - total_allocated
+    ready_to_assign = income_total - total_allocated
 
     categories = Category.query.filter_by(user_id=user_id).order_by(Category.position).all()
     result = []
@@ -225,6 +225,16 @@ def get_budget():
             category_id=cat.id
         ).scalar() or Decimal("0")
         spent_total = db.session.query(db.func.sum(Transaction.amount)).filter_by(category_id=cat.id).scalar() or Decimal("0")
+        active_target = CategoryTarget.query.filter_by(category_id=cat.id, superseded_at=None).first()
+        target = None
+        if active_target is not None:
+            full = _serialize_target(active_target)
+            target = {
+                "target_type": full["target_type"],
+                "target_amount": full["target_amount"],
+                "target_date": full["target_date"],
+                "monthly_target_amount": full["monthly_target_amount"],
+            }
         result.append(
             {
                 "id": cat.id,
@@ -232,6 +242,7 @@ def get_budget():
                 "parent_id": cat.parent_id,
                 "allocated_this_month": str(allocated_this_month),
                 "available": str(allocated_total + spent_total),
+                "target": target,
             }
         )
 

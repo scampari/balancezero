@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: built
 depends_on: [auth.md, budget-api.md]
 ---
 
@@ -85,3 +85,4 @@ Lets a user see their transactions and assign them to a budget category (or unca
 - 002 (2026-08-10) — built. New transactions_api.py. Refactor extracted _current_user_id/_parse_month (verbatim duplicates of budget_api.py's) into shared api_helpers.py. All 14 tests green, 50/50 full suite.
 - 005 (2026-08-26) — added `is_income` toggle to § PATCH (mutually exclusive with `category_id`) and `is_income` to § GET's response shape — "To Be Budgeted." Second half of `changes/005-budget-targets-and-tbb/plan.md`, paired with `spec/budget-api.md`'s `ready_to_assign` change. Not yet built.
 - 005 (2026-08-26) — `is_income` tests locked: 7 tests in `tests/test_transactions.py`, all confirmed red. New `Transaction.is_income` column (`models.py`) + migration `a1b2c3d4e5f6` added as test infrastructure — the routes already exist (built in 002), so unlike the `CategoryTarget` case there is no routing `404` to stand in for a missing column; the column must be real for the arrange/side-effect assertions to fail cleanly on values rather than `AttributeError`. No handler/formula logic touched — that's the build's job. Not yet built.
+- 005 (2026-08-26) — built. `transactions_api.py`: `_serialize` gains `is_income`; `patch_transaction` accepts an `is_income` toggle, rejects `is_income: true` + non-null `category_id` with `400`, and applies the two implicit clears (marking `is_income` clears `category_id`, assigning a category clears `is_income`). All 7 tests green; 103/103 full suite (9 skipped — Plaid sandbox). Spec status → built.
