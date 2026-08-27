@@ -2,9 +2,11 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   type Budget,
+  type TargetType,
   createCategoryWithAutoRefresh,
   getBudgetWithAutoRefresh,
   setAllocationWithAutoRefresh,
+  setCategoryTargetWithAutoRefresh,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { AppShell, PageLoading } from '../components/AppShell'
@@ -27,6 +29,40 @@ export function BudgetPage() {
   // (including a temporarily-invalid one like "12.") without fighting the
   // server-confirmed value in `budget`.
   const [allocationDrafts, setAllocationDrafts] = useState<Record<number, string>>({})
+  // Which category's target editor is open, plus its in-progress form values.
+  const [targetEditorFor, setTargetEditorFor] = useState<number | null>(null)
+  const [targetType, setTargetType] = useState<TargetType>('monthly')
+  const [targetAmount, setTargetAmount] = useState('')
+  const [targetDate, setTargetDate] = useState('')
+  const [targetError, setTargetError] = useState<string | null>(null)
+  const [isSavingTarget, setIsSavingTarget] = useState(false)
+
+  function openTargetEditor(category: Budget['categories'][number]) {
+    setTargetEditorFor(category.id)
+    setTargetError(null)
+    setTargetType(category.target?.target_type ?? 'monthly')
+    setTargetAmount(category.target?.target_amount ?? '')
+    setTargetDate(category.target?.target_date ?? '')
+  }
+
+  async function handleSaveTarget(categoryId: number) {
+    if (!accessToken) return
+    setTargetError(null)
+    setIsSavingTarget(true)
+    try {
+      await setCategoryTargetWithAutoRefresh(accessToken, setAccessToken, categoryId, {
+        target_type: targetType,
+        target_amount: targetAmount.trim(),
+        ...(targetType === 'custom' ? { target_date: targetDate } : {}),
+      })
+      setTargetEditorFor(null)
+      await loadBudget(accessToken)
+    } catch (err) {
+      setTargetError(err instanceof Error ? err.message : 'Could not save target.')
+    } finally {
+      setIsSavingTarget(false)
+    }
+  }
 
   function loadBudget(token: string) {
     return getBudgetWithAutoRefresh(token, setAccessToken).then((data) => setBudget(data))
@@ -125,35 +161,111 @@ export function BudgetPage() {
               return (
                 <li
                   key={category.id}
-                  className="flex items-center justify-between gap-4 bg-(--color-surface) px-4 py-3 transition-colors hover:bg-(--color-surface-hover)"
+                  className="flex flex-col gap-2 bg-(--color-surface) px-4 py-3 transition-colors hover:bg-(--color-surface-hover)"
                 >
-                  <span className="text-sm text-(--color-text)">{category.name}</span>
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={`tabular-nums text-sm font-medium ${
-                        available < 0 ? 'text-(--color-negative)' : 'text-(--color-text)'
-                      }`}
-                    >
-                      {formatMoney(category.available)}
-                    </span>
-                    <label className="flex items-center gap-1.5">
-                      <span className="text-xs text-(--color-text-faint)">of $</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        aria-label={`Assign amount for ${category.name}`}
-                        value={draft ?? category.allocated_this_month}
-                        onChange={(event) =>
-                          setAllocationDrafts((prev) => ({ ...prev, [category.id]: event.target.value }))
-                        }
-                        onBlur={() => handleAllocationCommit(category.id)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') event.currentTarget.blur()
-                        }}
-                        className="tabular-nums w-20 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-right text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
-                      />
-                    </label>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-(--color-text)">{category.name}</span>
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={`tabular-nums text-sm font-medium ${
+                          available < 0 ? 'text-(--color-negative)' : 'text-(--color-text)'
+                        }`}
+                      >
+                        {formatMoney(category.available)}
+                      </span>
+                      <label className="flex items-center gap-1.5">
+                        <span className="text-xs text-(--color-text-faint)">of $</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          aria-label={`Assign amount for ${category.name}`}
+                          value={draft ?? category.allocated_this_month}
+                          onChange={(event) =>
+                            setAllocationDrafts((prev) => ({ ...prev, [category.id]: event.target.value }))
+                          }
+                          onBlur={() => handleAllocationCommit(category.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') event.currentTarget.blur()
+                          }}
+                          className="tabular-nums w-20 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-right text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                        />
+                      </label>
+                    </div>
                   </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-xs text-(--color-text-faint)">
+                      {category.target
+                        ? `Target: ${formatMoney(category.target.monthly_target_amount)}/mo` +
+                          (category.target.target_type === 'monthly'
+                            ? ''
+                            : ` (${formatMoney(category.target.target_amount)} ${
+                                category.target.target_type === 'yearly'
+                                  ? 'this year'
+                                  : `by ${category.target.target_date}`
+                              })`)
+                        : 'No target'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        targetEditorFor === category.id
+                          ? setTargetEditorFor(null)
+                          : openTargetEditor(category)
+                      }
+                      className="rounded-md border border-(--color-border) px-2 py-1 text-xs text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover)"
+                    >
+                      {category.target ? 'Edit target' : 'Set target'}
+                    </button>
+                  </div>
+
+                  {targetEditorFor === category.id && (
+                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-(--color-border) bg-(--color-bg) p-2">
+                      <select
+                        aria-label="Target type"
+                        value={targetType}
+                        onChange={(event) => setTargetType(event.target.value as TargetType)}
+                        className="rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-xs text-(--color-text) outline-none focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                      >
+                        <option value="monthly">Monthly</option>
+                        <option value="yearly">Yearly</option>
+                        <option value="custom">By date</option>
+                      </select>
+                      <label className="flex items-center gap-1.5">
+                        <span className="text-xs text-(--color-text-faint)">$</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          aria-label="Target amount"
+                          value={targetAmount}
+                          onChange={(event) => setTargetAmount(event.target.value)}
+                          className="tabular-nums w-24 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-right text-xs text-(--color-text) outline-none focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                        />
+                      </label>
+                      {targetType === 'custom' && (
+                        <input
+                          type="date"
+                          aria-label="Target date"
+                          value={targetDate}
+                          onChange={(event) => setTargetDate(event.target.value)}
+                          className="rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-xs text-(--color-text) outline-none focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                        />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleSaveTarget(category.id)}
+                        disabled={isSavingTarget || !targetAmount.trim()}
+                        className="rounded-md bg-(--color-accent) px-3 py-1 text-xs font-medium text-(--color-bg) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Save
+                      </button>
+                      {targetError && (
+                        <span role="alert" className="text-xs text-(--color-negative)">
+                          {targetError}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </li>
               )
             })}

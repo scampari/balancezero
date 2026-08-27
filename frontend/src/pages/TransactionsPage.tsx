@@ -5,6 +5,7 @@ import {
   type TransactionEntry,
   getBudgetWithAutoRefresh,
   getTransactionsWithAutoRefresh,
+  markTransactionIncomeWithAutoRefresh,
   patchTransactionCategoryWithAutoRefresh,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -56,19 +57,30 @@ export function TransactionsPage() {
     }
   }, [accessToken, isAuthChecked, navigate, setAccessToken])
 
+  // Sentinel select value for "To Be Budgeted" — distinct from '' (Uncategorized)
+  // and from any numeric category id.
+  const INCOME_OPTION = 'income'
+
   async function handleCategoryChange(transactionId: number, rawValue: string) {
     if (!accessToken || !transactions) return
-    const categoryId = rawValue === '' ? null : Number(rawValue)
-    const updated = await patchTransactionCategoryWithAutoRefresh(
-      accessToken,
-      setAccessToken,
-      transactionId,
-      categoryId,
-    )
+    const updated =
+      rawValue === INCOME_OPTION
+        ? await markTransactionIncomeWithAutoRefresh(accessToken, setAccessToken, transactionId)
+        : await patchTransactionCategoryWithAutoRefresh(
+            accessToken,
+            setAccessToken,
+            transactionId,
+            rawValue === '' ? null : Number(rawValue),
+          )
     setTransactions(
       transactions.map((t) =>
         t.id === transactionId
-          ? { ...t, category_id: updated.category_id, category_name: updated.category_name }
+          ? {
+              ...t,
+              category_id: updated.category_id,
+              category_name: updated.category_name,
+              is_income: updated.is_income,
+            }
           : t,
       ),
     )
@@ -120,11 +132,12 @@ export function TransactionsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <select
-                        value={transaction.category_id ?? ''}
+                        value={transaction.is_income ? INCOME_OPTION : (transaction.category_id ?? '')}
                         onChange={(event) => handleCategoryChange(transaction.id, event.target.value)}
                         className="w-full max-w-40 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
                       >
                         <option value="">Uncategorized</option>
+                        <option value={INCOME_OPTION}>To Be Budgeted</option>
                         {categories.map((category) => (
                           <option key={category.id} value={category.id}>
                             {category.name}

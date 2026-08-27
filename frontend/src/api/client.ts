@@ -41,11 +41,21 @@ export async function logout(accessToken: string): Promise<void> {
   await request('/logout', { method: 'POST' }, accessToken)
 }
 
+export type TargetType = 'monthly' | 'yearly' | 'custom'
+
+export interface CategoryTarget {
+  target_type: TargetType
+  target_amount: string
+  target_date: string | null
+  monthly_target_amount: string
+}
+
 export interface BudgetCategory {
   id: number
   name: string
   allocated_this_month: string
   available: string
+  target: CategoryTarget | null
 }
 
 export interface Budget {
@@ -70,6 +80,7 @@ export interface TransactionEntry {
   amount: string
   description: string
   pending: boolean
+  is_income: boolean
 }
 
 export interface TransactionsResponse {
@@ -84,14 +95,36 @@ export async function getTransactions(accessToken: string, month?: string): Prom
   return res.json()
 }
 
+export interface TransactionPatchResult {
+  id: number
+  category_id: number | null
+  category_name: string | null
+  is_income: boolean
+}
+
 export async function patchTransactionCategory(
   accessToken: string,
   transactionId: number,
   categoryId: number | null,
-): Promise<{ id: number; category_id: number | null; category_name: string | null }> {
+): Promise<TransactionPatchResult> {
   const res = await request(
     `/transactions/${transactionId}`,
     { method: 'PATCH', body: JSON.stringify({ category_id: categoryId }) },
+    accessToken,
+  )
+  await throwIfError(res)
+  return res.json()
+}
+
+// Marks a transaction "To Be Budgeted" — the server clears any category
+// (is_income and category_id are mutually exclusive).
+export async function markTransactionIncome(
+  accessToken: string,
+  transactionId: number,
+): Promise<TransactionPatchResult> {
+  const res = await request(
+    `/transactions/${transactionId}`,
+    { method: 'PATCH', body: JSON.stringify({ is_income: true, category_id: null }) },
     accessToken,
   )
   await throwIfError(res)
@@ -113,6 +146,26 @@ export async function setAllocation(
   const res = await request(
     `/categories/${categoryId}/allocations`,
     { method: 'POST', body: JSON.stringify({ month, amount }) },
+    accessToken,
+  )
+  await throwIfError(res)
+  return res.json()
+}
+
+export interface SetTargetInput {
+  target_type: TargetType
+  target_amount: string
+  target_date?: string
+}
+
+export async function setCategoryTarget(
+  accessToken: string,
+  categoryId: number,
+  input: SetTargetInput,
+): Promise<CategoryTarget & { id: number; category_id: number }> {
+  const res = await request(
+    `/categories/${categoryId}/target`,
+    { method: 'POST', body: JSON.stringify(input) },
     accessToken,
   )
   await throwIfError(res)
@@ -199,9 +252,34 @@ export function patchTransactionCategoryWithAutoRefresh(
   onTokenRefreshed: (token: string) => void,
   transactionId: number,
   categoryId: number | null,
-): Promise<{ id: number; category_id: number | null; category_name: string | null }> {
+): Promise<TransactionPatchResult> {
   return withAutoRefresh(
     (token) => patchTransactionCategory(token, transactionId, categoryId),
+    accessToken,
+    onTokenRefreshed,
+  )
+}
+
+export function markTransactionIncomeWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  transactionId: number,
+): Promise<TransactionPatchResult> {
+  return withAutoRefresh(
+    (token) => markTransactionIncome(token, transactionId),
+    accessToken,
+    onTokenRefreshed,
+  )
+}
+
+export function setCategoryTargetWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  categoryId: number,
+  input: SetTargetInput,
+): Promise<CategoryTarget & { id: number; category_id: number }> {
+  return withAutoRefresh(
+    (token) => setCategoryTarget(token, categoryId, input),
     accessToken,
     onTokenRefreshed,
   )
