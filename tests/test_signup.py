@@ -303,3 +303,48 @@ def test_login_rate_limited_after_threshold_returns_429(client, test_user):
 
     # Assert — even a correct password is refused once the window is exhausted
     assert response.status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# Starter categories (changes/017)
+# ---------------------------------------------------------------------------
+
+
+def test_signup_seeds_a_starter_category_tree(client, invite_code):
+    from models import BudgetAllocation, Category
+    from starter_categories import STARTER_CATEGORIES
+
+    client.post(
+        "/api/signup",
+        json={"username": "newbie", "password": VALID_PASSWORD, "invite_code": INVITE_CODE},
+    )
+    user = User.query.filter_by(username="newbie").first()
+
+    cats = {c.name: c for c in Category.query.filter_by(user_id=user.id).all()}
+    expected_names = [g for g, _ in STARTER_CATEGORIES] + [
+        s for _, subs in STARTER_CATEGORIES for s in subs
+    ]
+    assert set(cats) == set(expected_names)
+
+    # "Housing" is a top-level group; "Rent/Mortgage" hangs under it.
+    assert cats["Housing"].parent_id is None
+    assert cats["Rent/Mortgage"].parent_id == cats["Housing"].id
+    # "Miscellaneous" is a plain top-level line (no children in the tree).
+    assert cats["Miscellaneous"].parent_id is None
+
+    # Nothing is budgeted.
+    assert BudgetAllocation.query.filter_by(user_id=user.id).count() == 0
+
+
+def test_signup_starter_categories_leave_ready_to_assign_at_zero(client, invite_code):
+    signup = client.post(
+        "/api/signup",
+        json={"username": "newbie", "password": VALID_PASSWORD, "invite_code": INVITE_CODE},
+    )
+    token = signup.get_json()["access_token"]
+    body = client.get("/api/budget", headers={"Authorization": f"Bearer {token}"}).get_json()
+    assert body["ready_to_assign"] == "0"
+    # The seeded groups show up, and each is an is_group total of its children.
+    housing = next(c for c in body["categories"] if c["name"] == "Housing")
+    assert housing["is_group"] is True
+    assert housing["allocated_this_month"] == "0"

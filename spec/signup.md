@@ -47,6 +47,13 @@ token is response-body only, never a cookie (same as `/api/login`).
 - One `RefreshToken` record created (hash stored, never the raw token),
   and a `Set-Cookie` for the refresh token: `HttpOnly; Secure;
   SameSite=Strict; Path=/api` — identical attributes to `/api/login`.
+- **(changes/017)** A starter tree of `Category` rows is created for the
+  new user — grouped (Housing, Food, Transportation, Debt Payments,
+  Health, Personal, Entertainment, Savings) plus subcategories, and a
+  plain "Miscellaneous". **No `BudgetAllocation` and no `CategoryTarget`
+  rows** — structure only, so `ready_to_assign` is unaffected. The list
+  lives in `starter_categories.py`; `create_starter_categories()` is a
+  no-op for a user that already has categories.
 
 #### Error cases
 - **When `username`, `password`, or `invite_code` is missing from the
@@ -153,3 +160,9 @@ length the row resets.
   `LoginPage`. 21 tests in `tests/test_signup.py` + 3 e2e in
   `signup.spec.ts`. Full suite 149 passed / 9 Plaid-sandbox skipped;
   e2e 14 passed.
+- 017 (2026-08-27) — starter categories. `signup` (and `seed_real_user.py`)
+  call `create_starter_categories(user_id)` after the user flush: a fixed
+  grouped tree from `starter_categories.py`, no allocations/targets, so a
+  new user's budget view isn't empty. `tests/test_signup.py` +2, e2e
+  `signup.spec.ts` asserts a starter category is visible. Full suite 212
+  passed / 6 skipped.

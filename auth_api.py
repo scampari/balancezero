@@ -8,6 +8,7 @@ from flask_jwt_extended import create_access_token, jwt_required
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from models import AuthThrottle, InviteCode, RefreshToken, User, db
+from starter_categories import create_starter_categories
 
 REFRESH_TOKEN_TTL = timedelta(days=30)
 
@@ -222,6 +223,10 @@ def signup():
     )
     db.session.add(user)
     db.session.flush()  # assign user.id for the invite's used_by_user_id
+
+    # Give the new user a starter category tree (structure only, nothing
+    # budgeted) so the budget view isn't empty on first load.
+    create_starter_categories(user.id)
 
     invite.used_at = datetime.utcnow()
     invite.used_by_user_id = user.id

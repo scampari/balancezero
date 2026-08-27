@@ -36,9 +36,11 @@ test.describe('invite-only signup', () => {
     await page.getByLabel('Invite code').fill(INVITE_CODE)
     await page.getByRole('button', { name: 'Create account' }).click()
 
-    // Assert — logged straight in
+    // Assert — logged straight in, with a starter category tree to work from
     await expect(page).toHaveURL(/\/budget$/)
     await expect(page.getByText('Ready to Assign')).toBeVisible()
+    await expect(page.locator('li[data-category="Housing"]')).toBeVisible()
+    await expect(page.locator('li[data-category="Groceries"]')).toBeVisible()
   })
 
   test('a bad invite code shows an inline error and stays on /signup', async ({ page }) => {

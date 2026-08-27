@@ -5,6 +5,7 @@ from werkzeug.security import generate_password_hash
 
 from app import app
 from models import User, db
+from starter_categories import create_starter_categories
 
 with app.app_context():
     username = input("Choose a username for your real account: ")
@@ -18,5 +19,7 @@ with app.app_context():
         user = User(username=username, is_demo=False)
         db.session.add(user)
     user.password_hash = generate_password_hash(password)
+    db.session.flush()
+    create_starter_categories(user.id)  # no-op if the user already has categories
     db.session.commit()
     print(f"Saved. '{username}' (is_demo=False) now has a password hash on file.")

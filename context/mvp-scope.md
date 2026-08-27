@@ -16,5 +16,7 @@ Partially built already: auth (needs the token-auth rework), data model, budget 
 ## Explicitly deferred, not MVP
 Auto-categorization rules, multi-account households, budget templates/goals, reports beyond the current month, public signup.
 
+Post-MVP, several of these were built as deliberate scope additions (see the `changes/` dirs): invite-only signup (007), multi-institution Plaid (008), a reports page (009), auto-categorization by prior choice (013). And a starter *category tree* is now seeded at signup (017) — structure only, no amounts, so it's not the "budget templates/goals" that were deferred.
+
 ## Known local gotcha
 Heredoc pastes (`cat > file <<'EOF' ... EOF`) containing `<...>` have silently dropped that content before in this project (hit twice on a Flask route decorator with a dynamic segment, e.g. `@app.route("/records/<int:record_id>")` landed as `@app.route("/records/")`, no error). Verify any pasted file containing angle brackets with `grep` immediately after writing it, especially API routes with path parameters.
