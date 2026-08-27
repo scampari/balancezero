@@ -467,3 +467,83 @@ def test_sync_skips_starting_balance_for_a_zero_balance_account(client, test_use
 
     account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-zero").first()
     assert Transaction.query.filter_by(account_id=account.id, description="Starting Balance").count() == 0
+
+
+# ---------------------------------------------------------------------------
+# auto-categorization by prior choice (changes/013)
+# ---------------------------------------------------------------------------
+
+
+def _seed_account_and_category(user, category_name="Groceries"):
+    from models import Category
+
+    account = Account(user_id=user.id, name="Checking", plaid_account_id="acc-ac")
+    category = Category(user_id=user.id, name=category_name)
+    db.session.add_all([account, category])
+    db.session.commit()
+    return account, category
+
+
+def test_sync_auto_categorizes_new_transaction_from_prior_same_merchant(client, test_user, auth_headers, monkeypatch):
+    account, category = _seed_account_and_category(test_user)
+    item = _seed_item(test_user, "item-ac")
+    account.plaid_item_id = item.id
+    # A prior transaction at "WHOLE FOODS" the user categorized.
+    db.session.add(Transaction(
+        account_id=account.id, plaid_transaction_id="prior", posted_at="2026-07-01",
+        amount=-30, description="WHOLE FOODS", category_id=category.id,
+    ))
+    db.session.commit()
+
+    class _NewSameMerchant:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(added=[
+                {"transaction_id": "new-1", "account_id": "acc-ac", "amount": 12.0,
+                 "date": "2026-08-15", "name": "WHOLE FOODS", "pending": False},
+                {"transaction_id": "new-2", "account_id": "acc-ac", "amount": 8.0,
+                 "date": "2026-08-16", "name": "NEVER SEEN BEFORE", "pending": False},
+            ])
+
+    _patch_client(monkeypatch, _NewSameMerchant())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+    assert response.status_code == 200
+
+    matched = Transaction.query.filter_by(account_id=account.id, plaid_transaction_id="new-1").first()
+    unmatched = Transaction.query.filter_by(account_id=account.id, plaid_transaction_id="new-2").first()
+    assert matched.category_id == category.id  # auto-filled
+    assert unmatched.category_id is None  # no prior match, left alone
+
+
+def test_sync_does_not_recategorize_a_modified_transaction(client, test_user, auth_headers, monkeypatch):
+    account, groceries = _seed_account_and_category(test_user, "Groceries")
+    from models import Category
+    dining = Category(user_id=test_user.id, name="Dining")
+    db.session.add(dining)
+    item = _seed_item(test_user, "item-ac2")
+    account.plaid_item_id = item.id
+    # An existing synced transaction the user filed under Dining.
+    db.session.add(Transaction(
+        account_id=account.id, plaid_transaction_id="existing", posted_at="2026-08-01",
+        amount=-20, description="CHIPOTLE", category_id=dining.id,
+    ))
+    # A prior CHIPOTLE the user filed under Groceries (older).
+    db.session.add(Transaction(
+        account_id=account.id, plaid_transaction_id="older", posted_at="2026-07-01",
+        amount=-19, description="CHIPOTLE", category_id=groceries.id,
+    ))
+    db.session.commit()
+
+    class _ModifyExisting:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(modified=[
+                {"transaction_id": "existing", "account_id": "acc-ac", "amount": 21.0,
+                 "date": "2026-08-01", "name": "CHIPOTLE", "pending": False},
+            ])
+
+    _patch_client(monkeypatch, _ModifyExisting())
+
+    client.post("/api/plaid/sync", headers=auth_headers)
+
+    kept = Transaction.query.filter_by(account_id=account.id, plaid_transaction_id="existing").first()
+    assert kept.category_id == dining.id  # user's choice untouched by the modify

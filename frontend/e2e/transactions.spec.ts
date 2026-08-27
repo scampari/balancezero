@@ -122,4 +122,29 @@ test.describe('transactions page', () => {
     await page.getByRole('link', { name: 'Transactions' }).click()
     await expect(page.getByText('Manual Coffee')).toHaveCount(0)
   })
+
+  test('a new transaction is auto-categorized from a prior same-merchant choice', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Transactions' }).click()
+
+    // First one: category it explicitly.
+    await page.getByRole('button', { name: 'Add transaction' }).click()
+    await page.getByLabel('Amount').fill('-6.00')
+    await page.getByLabel('Description').fill('AUTOCAT DELI')
+    await page.getByLabel('Category').selectOption({ label: 'Groceries' })
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    await expect(page.getByRole('row', { name: /AUTOCAT DELI/ })).toBeVisible()
+
+    // Second one at the same merchant, no category picked.
+    await page.getByRole('button', { name: 'Add transaction' }).click()
+    await page.getByLabel('Amount').fill('-7.25')
+    await page.getByLabel('Description').fill('AUTOCAT DELI')
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+
+    // Both rows now show Groceries — the second inherited the first's choice.
+    const rows = page.getByRole('row', { name: /AUTOCAT DELI/ })
+    await expect(rows).toHaveCount(2)
+    expect(await selectedOptionText(rows.nth(0).getByRole('combobox'))).toBe('Groceries')
+    expect(await selectedOptionText(rows.nth(1).getByRole('combobox'))).toBe('Groceries')
+  })
 })

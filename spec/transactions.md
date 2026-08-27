@@ -56,7 +56,9 @@ category, if one is given).
 `GET /api/transactions` row. `is_income` is always `false` on creation;
 `plaid_transaction_id` stays `null` (this is a manual entry, not a Plaid
 import). Sign follows the app convention — negative = spending, positive =
-inflow.
+inflow. **When `category_id` is omitted (changes/013), it is auto-filled
+from the category on the user's most recent transaction with the exact
+same `description` — an explicit `category_id` in the body always wins.**
 **Side effects:** One `Transaction` row created under the given account.
 
 #### Error cases
@@ -133,3 +135,9 @@ still has it and changes it, you probably want it back).
   `tests/test_transactions.py` (11 new); `TransactionsPage.tsx` gains an
   add form + per-row delete; e2e `transactions.spec.ts` (+2). Full suite
   192 passed / 6 skipped. See `changes/011-transaction-editing-and-import-cutoff/plan.md`.
+- 013 (2026-08-27) — auto-categorization by reuse. `POST /api/transactions`
+  auto-fills `category_id` (when omitted) from the user's most recent
+  transaction with the same `description`. Shared helper
+  `api_helpers.infer_category_id` — see `spec/plaid-sync.md` for the sync
+  side. Never overrides an explicit category or an existing row's category.
+  `tests/test_transactions.py` +3.

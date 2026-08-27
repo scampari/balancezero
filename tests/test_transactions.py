@@ -582,3 +582,57 @@ def test_delete_transaction_without_token_returns_401(client, test_user, auth_he
     account = _make_account(test_user.id)
     txn = _make_transaction(account.id, CURRENT_MONTH, "-5.00", "X")
     assert client.delete(f"/api/transactions/{txn.id}").status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# auto-categorization by prior choice (changes/013)
+# ---------------------------------------------------------------------------
+
+
+def test_manual_transaction_auto_categorizes_from_prior_same_merchant(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    category = _make_category(test_user.id, name="Coffee")
+    _make_transaction(account.id, CURRENT_MONTH, "-4.00", "BLUE BOTTLE", category_id=category.id)
+
+    response = client.post(
+        "/api/transactions",
+        json={"account_id": account.id, "posted_at": CURRENT_MONTH.isoformat(), "amount": "-4.50", "description": "BLUE BOTTLE"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["category_id"] == category.id
+    assert body["category_name"] == "Coffee"
+
+
+def test_manual_transaction_no_prior_match_stays_uncategorized(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    _make_category(test_user.id, name="Coffee")
+
+    response = client.post(
+        "/api/transactions",
+        json={"account_id": account.id, "posted_at": CURRENT_MONTH.isoformat(), "amount": "-4.50", "description": "UNKNOWN CAFE"},
+        headers=auth_headers,
+    )
+    assert response.get_json()["category_id"] is None
+
+
+def test_manual_transaction_explicit_category_wins_over_inference(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    coffee = _make_category(test_user.id, name="Coffee")
+    dining = _make_category(test_user.id, name="Dining")
+    _make_transaction(account.id, CURRENT_MONTH, "-4.00", "BLUE BOTTLE", category_id=coffee.id)
+
+    response = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account.id,
+            "posted_at": CURRENT_MONTH.isoformat(),
+            "amount": "-4.50",
+            "description": "BLUE BOTTLE",
+            "category_id": dining.id,
+        },
+        headers=auth_headers,
+    )
+    assert response.get_json()["category_id"] == dining.id

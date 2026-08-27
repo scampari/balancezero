@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from api_helpers import current_user_id as _current_user_id
+from api_helpers import infer_category_id as _infer_category_id
 from api_helpers import month_bounds as _month_bounds
 from api_helpers import parse_month as _parse_month
 from models import Account, Category, Transaction, db
@@ -178,6 +179,11 @@ def create_transaction():
         if category.user_id != user_id:
             return jsonify({"error": "forbidden"}), 403
         category_name = category.name
+    else:
+        # No category given — auto-fill from a prior same-merchant choice.
+        category_id = _infer_category_id(user_id, description)
+        if category_id is not None:
+            category_name = db.session.get(Category, category_id).name
 
     transaction = Transaction(
         account_id=account_id,

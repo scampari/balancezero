@@ -282,3 +282,10 @@ server-side logging of the swallowed exception in `sync()`.
   pre-connection history, this puts the resulting balance back into
   `ready_to_assign`. Created only on account creation (idempotent across
   re-syncs); skipped for a zero balance. Tests in `tests/test_plaid_sync.py`.
+- 013 (2026-08-27) — auto-categorization by reuse. When `_upsert_transaction`
+  creates a **new** row with no category (and not `is_income`), it copies
+  the category from the user's most recent transaction with the same
+  `description` (same merchant), via `api_helpers.infer_category_id` with a
+  per-sync `description -> category_id` cache. Only on creation — a
+  `modified` upsert never re-categorizes, so a user's filing survives.
+  `tests/test_plaid_sync.py` +2.

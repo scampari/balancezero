@@ -15,7 +15,7 @@ from plaid.model.products import Products
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
 from sqlalchemy.exc import IntegrityError
 
-from api_helpers import current_user_id
+from api_helpers import current_user_id, infer_category_id
 from models import Account, PlaidItem, Transaction, User, db
 
 plaid_bp = Blueprint("plaid_api", __name__, url_prefix="/api/plaid")
@@ -260,22 +260,29 @@ def _add_starting_balance(account, plaid_item):
     )
 
 
-def _upsert_transaction(account, plaid_transaction):
-    """SimpleFIN/Plaid-owned fields only — never touches category_id, so a
-    user's categorization survives any future upsert of the same
-    transaction. Plaid's amount sign convention is the OPPOSITE of this
-    app's (positive = outflow for Plaid; positive = inflow here) — see
-    spec/plaid-sync.md's Notes. Negate on every write."""
+def _upsert_transaction(account, plaid_transaction, category_cache=None):
+    """Plaid-owned fields only — never touches category_id on an *existing*
+    row, so a user's categorization survives any future upsert. Plaid's
+    amount sign convention is the OPPOSITE of this app's (positive = outflow
+    for Plaid; positive = inflow here) — see spec/plaid-sync.md's Notes.
+    Negate on every write. A brand-new row with no category is auto-filled
+    from a prior same-merchant choice (infer_category_id)."""
     transaction = Transaction.query.filter_by(
         account_id=account.id, plaid_transaction_id=plaid_transaction["transaction_id"]
     ).first()
-    if transaction is None:
+    is_new = transaction is None
+    if is_new:
         transaction = Transaction(account_id=account.id, plaid_transaction_id=plaid_transaction["transaction_id"])
         db.session.add(transaction)
     transaction.amount = -Decimal(str(plaid_transaction["amount"]))
     transaction.description = plaid_transaction["name"]
     transaction.posted_at = plaid_transaction["date"]
     transaction.pending = plaid_transaction["pending"]
+
+    if is_new and transaction.category_id is None and not transaction.is_income:
+        inferred = infer_category_id(account.user_id, transaction.description, category_cache)
+        if inferred is not None:
+            transaction.category_id = inferred
 
 
 def _delete_removed_transaction(account, removed_entry):
@@ -342,6 +349,9 @@ def _sync_one_item(user, item):
 
     accounts_synced_ids = set()
     counters = dict(_EMPTY_COUNTERS)
+    # description -> category_id, reused across this item's pages so each
+    # distinct merchant is looked up once (see infer_category_id).
+    category_cache = {}
 
     has_more = True
     while has_more:
@@ -376,13 +386,13 @@ def _sync_one_item(user, item):
         for plaid_transaction in response["added"]:
             if not _within_import_window(plaid_transaction, item):
                 continue
-            _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction)
+            _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache)
             counters["transactions_added"] += 1
 
         for plaid_transaction in response["modified"]:
             if not _within_import_window(plaid_transaction, item):
                 continue
-            _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction)
+            _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache)
             counters["transactions_modified"] += 1
 
         for removed_entry in response["removed"]:
