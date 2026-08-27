@@ -292,6 +292,54 @@ export async function getPlaidStatus(accessToken: string): Promise<{ items: Plai
   return res.json()
 }
 
+export interface SpendingByCategory {
+  category_id: number | null
+  category: string
+  parent_id: number | null
+  total: string
+  by_month: { month: string; amount: string }[]
+}
+
+export interface IncomeVsExpenseMonth {
+  month: string
+  income: string
+  expense: string
+  net: string
+}
+
+export interface MonthOverMonth {
+  month: string
+  total: string
+  change: string | null
+  change_pct: string | null
+}
+
+export interface TopMerchant {
+  description: string
+  total: string
+  count: number
+}
+
+export interface ReportsResponse {
+  from: string
+  to: string
+  months: string[]
+  spending_by_category: SpendingByCategory[]
+  income_vs_expense: IncomeVsExpenseMonth[]
+  month_over_month_spend: MonthOverMonth[]
+  top_merchants: TopMerchant[]
+}
+
+export async function getReports(accessToken: string, from?: string, to?: string): Promise<ReportsResponse> {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+  const qs = params.toString()
+  const res = await request(`/reports${qs ? `?${qs}` : ''}`, { method: 'GET' }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
 export async function removePlaidItem(accessToken: string, itemId: number): Promise<{ status: string }> {
   const res = await request(`/plaid/items/${itemId}`, { method: 'DELETE' }, accessToken)
   await throwIfError(res)
@@ -487,4 +535,13 @@ export function removePlaidItemWithAutoRefresh(
   itemId: number,
 ): Promise<{ status: string }> {
   return withAutoRefresh((token) => removePlaidItem(token, itemId), accessToken, onTokenRefreshed)
+}
+
+export function getReportsWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  from?: string,
+  to?: string,
+): Promise<ReportsResponse> {
+  return withAutoRefresh((token) => getReports(token, from, to), accessToken, onTokenRefreshed)
 }

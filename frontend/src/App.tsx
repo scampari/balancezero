@@ -4,6 +4,7 @@ import { ThemeProvider } from './theme/ThemeContext'
 import { AccountsPage } from './pages/AccountsPage'
 import { BudgetPage } from './pages/BudgetPage'
 import { LoginPage } from './pages/LoginPage'
+import { ReportsPage } from './pages/ReportsPage'
 import { SignupPage } from './pages/SignupPage'
 import { TransactionsPage } from './pages/TransactionsPage'
 
@@ -19,6 +20,7 @@ export default function App() {
             <Route path="/budget" element={<BudgetPage />} />
             <Route path="/transactions" element={<TransactionsPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
             <Route path="/" element={<Navigate to="/budget" replace />} />
           </Routes>
         </BrowserRouter>

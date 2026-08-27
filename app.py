@@ -17,6 +17,7 @@ from auth_api import auth_bp, register_jwt_error_handlers
 from budget_api import budget_bp
 from models import db
 from plaid_api import plaid_bp
+from reports_api import reports_bp
 from transactions_api import transactions_bp
 
 app = Flask(__name__)
@@ -76,6 +77,7 @@ app.register_blueprint(budget_bp)
 app.register_blueprint(transactions_bp)
 app.register_blueprint(plaid_bp)
 app.register_blueprint(accounts_bp)
+app.register_blueprint(reports_bp)
 
 
 @app.route("/api/health")
