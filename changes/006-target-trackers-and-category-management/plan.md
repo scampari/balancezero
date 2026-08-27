@@ -1,8 +1,9 @@
 # Slicing: target trackers + category management + budget-view columns
 
 > Date: 2026-08-27
-> Status: in-progress
+> Status: built
 > Branch: agent/006-target-trackers
+> PR: #6
 
 ## What & Why
 Follows slice 005 (category targets + "To Be Budgeted"). Closes the next
