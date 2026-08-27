@@ -74,8 +74,11 @@ class PlaidItem(db.Model):
     last_synced_at = db.Column(db.DateTime, nullable=True)
     # Transactions dated before this are skipped on sync — a fresh connection
     # only imports transactions that post on/after the connect date, not the
-    # ~90 days of history Plaid returns. Null = import everything (backfilled
-    # rows from the pre-changes/008 single-institution era). See changes/011.
+    # ~90 days of history Plaid returns (changes/011). Set on every new link.
+    # If NULL (a row created before this column existed, or otherwise missed),
+    # sync falls back to `created_at`'s date — never "import everything"
+    # (changes/016, after a real connection pulled ~3 months). Backfilled by
+    # migration 8c14d99893c5.
     import_cutoff = db.Column(db.Date, nullable=True)
 
     __table_args__ = (

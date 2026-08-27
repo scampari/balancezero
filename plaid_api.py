@@ -251,7 +251,7 @@ def _add_starting_balance(account, plaid_item):
             account_id=account.id,
             category_id=None,
             plaid_transaction_id=None,  # synthetic, not from Plaid
-            posted_at=plaid_item.import_cutoff or date.today(),
+            posted_at=_import_cutoff(plaid_item),
             amount=account.balance,
             description="Starting Balance",
             pending=False,
@@ -311,17 +311,24 @@ _EMPTY_COUNTERS = {
 }
 
 
+def _import_cutoff(item):
+    """The earliest transaction date a sync will import for this item.
+    `import_cutoff` is set to the connect date on every new link; if it's
+    NULL — a row created before changes/011 added the column, or otherwise
+    missed — fall back to the item's own creation date rather than pulling
+    Plaid's entire ~90-day history window."""
+    return item.import_cutoff or item.created_at.date()
+
+
 def _within_import_window(plaid_transaction, item):
-    """A fresh connection ignores the historical backfill — only transactions
-    dated on/after item.import_cutoff are imported. Null cutoff (backfilled
-    rows) = import everything. Applies to `added` and `modified`; `removed`
-    is naturally a no-op for anything never imported."""
-    if item.import_cutoff is None:
-        return True
+    """A fresh connection ignores Plaid's historical backfill — only
+    transactions dated on/after the item's import cutoff are imported.
+    Applies to `added` and `modified`; `removed` is naturally a no-op for
+    anything never imported."""
     posted = plaid_transaction["date"]
     if isinstance(posted, str):
         posted = date.fromisoformat(posted)
-    return posted >= item.import_cutoff
+    return posted >= _import_cutoff(item)
 
 
 def _should_import(plaid_transaction, item):

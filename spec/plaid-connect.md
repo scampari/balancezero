@@ -279,3 +279,10 @@ credentials set — it's not dead code, just not currently exercised.
   sets it to `date.today()` on a **new** item (not on re-link — the cutoff
   stays put). Backfilled rows and everything pre-011 have `NULL` = import
   all history. Migration `24d3aed8ab6c`.
+- 016 (2026-08-27) — bug fix. A real connection pulled ~3 months of
+  history: its `PlaidItem` predated the `import_cutoff` column, so
+  `import_cutoff` was `NULL`, and sync read `NULL` as "import everything."
+  `NULL` now falls back to the item's `created_at` date, at runtime
+  (`_import_cutoff`) and via a one-off backfill (migration `8c14d99893c5`,
+  `UPDATE ... SET import_cutoff = created_at::date WHERE import_cutoff IS
+  NULL`). A NULL cutoff can never again mean unbounded history.

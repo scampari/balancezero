@@ -297,3 +297,7 @@ server-side logging of the swallowed exception in `sync()`.
   count toward `transactions_added` / `transactions_modified`. Synced rows
   are therefore always `pending = false`. `removed` for a never-imported
   pending entry stays a no-op. `tests/test_plaid_sync.py` +2.
+- 016 (2026-08-27) — bug fix: a `NULL` `import_cutoff` no longer means
+  "import everything" (that let a pre-011 item pull ~3 months on its first
+  sync). `_import_cutoff(item)` returns `item.import_cutoff or
+  item.created_at.date()`, and migration `8c14d99893c5` backfills the NULLs.
