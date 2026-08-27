@@ -43,14 +43,14 @@ def _months_remaining(today, through_year, through_month):
 
 
 def _serialize_target(target):
-    today = date.today()
     if target.target_type == "monthly":
         monthly_target_amount = target.target_amount
-    elif target.target_type == "yearly":
-        months = _months_remaining(today, today.year, 12)
-        monthly_target_amount = (target.target_amount / months).quantize(Decimal("0.01"))
-    else:  # custom
-        months = _months_remaining(today, target.target_date.year, target.target_date.month)
+    else:
+        today = date.today()
+        if target.target_type == "yearly":
+            months = _months_remaining(today, today.year, 12)
+        else:  # custom
+            months = _months_remaining(today, target.target_date.year, target.target_date.month)
         monthly_target_amount = (target.target_amount / months).quantize(Decimal("0.01"))
 
     return {
