@@ -343,12 +343,15 @@ credentials set — it's not dead code, just not currently exercised.
   (`_import_cutoff`) and via a one-off backfill (migration `8c14d99893c5`,
   `UPDATE ... SET import_cutoff = created_at::date WHERE import_cutoff IS
   NULL`). A NULL cutoff can never again mean unbounded history.
-- 023 (2026-08-28) — contract landed by test-planning. New route
+- 023 (2026-08-28) — contract landed by test-planning, **route built**. New
   `POST /api/plaid/items/<id>/update-link-token` mints an update-mode
   link_token (`update.account_selection_enabled=true`, no `products`, item's
   stored `access_token`) so a user can add accounts at an already-linked
   bank. Same demo / `404` / IDOR `403` / sanitized `502` guards as
   `DELETE /api/plaid/items/<id>`. No `/connect` or `/status` change — update
-  mode returns no `public_token`. Paired with `spec/plaid-sync.md` §
-  Per-account import cutoff. Plan:
-  `changes/023-add-accounts-update-mode/plan.md`. Not yet built.
+  mode returns no `public_token`. `plaid_api.py`: extracted
+  `_base_link_token_args` / `_create_link_token_or_502` shared by both
+  link-token routes; new `create_update_link_token`. 6 offline tests green,
+  1 `@requires_plaid_sandbox` (full suite 265 passed / 7 skipped). Paired
+  with `spec/plaid-sync.md` § Per-account import cutoff (that slice not yet
+  built). Plan: `changes/023-add-accounts-update-mode/plan.md`.
