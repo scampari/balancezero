@@ -1363,3 +1363,210 @@ def test_set_allocation_on_a_group_category_returns_400(client, test_user, auth_
 
     response = _allocate(client, auth_headers, food, "100.00")
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GET /api/budget — YNAB-style credit-card budgeting (changes/021)
+# ---------------------------------------------------------------------------
+
+
+def _card_txn(account_id, amount, category_id=None, transfer=False, description="card txn",
+              posted_at=None, plaid_transaction_id="p", is_income=False):
+    from decimal import Decimal
+    from models import Transaction
+
+    txn = Transaction(
+        account_id=account_id,
+        category_id=category_id,
+        posted_at=posted_at or date.today().replace(day=1),
+        amount=Decimal(amount),
+        description=description,
+        transfer=transfer,
+        is_income=is_income,
+        plaid_transaction_id=plaid_transaction_id,
+    )
+    db.session.add(txn)
+    db.session.commit()
+    return txn
+
+
+def test_budget_entries_carry_payment_flags(client, test_user, auth_headers, credit_account):
+    _account, payment_cat, group = credit_account
+    body = client.get("/api/budget", headers=auth_headers).get_json()
+    by_id = {c["id"]: c for c in body["categories"]}
+
+    assert by_id[payment_cat.id]["is_payment_category"] is True
+    assert by_id[payment_cat.id]["payment_account_id"] == _account.id
+    assert by_id[group.id]["is_payment_category"] is False
+    assert by_id[group.id]["is_group"] is True
+
+
+def test_card_purchase_raises_payment_available_and_lowers_the_spending_category(
+    client, test_user, auth_headers, credit_account
+):
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _allocate(client, auth_headers, groceries, "100.00")
+    _card_txn(card.id, "-40.00", category_id=groceries, description="WHOLE FOODS", plaid_transaction_id="g1")
+
+    groceries_entry = _budget_entry(client, auth_headers, groceries)
+    payment_entry = _budget_entry(client, auth_headers, payment_cat.id)
+
+    # The purchase still counts as spend in Groceries.
+    assert Decimal(groceries_entry["spent_this_month"]) == Decimal("-40.00")
+    assert Decimal(groceries_entry["available"]) == Decimal("60.00")
+    # ...and the payment envelope now holds the money owed for it.
+    assert Decimal(payment_entry["available"]) == Decimal("40.00")
+    assert Decimal(payment_entry["spent_this_month"]) == Decimal("0")
+
+
+def test_card_purchase_leaves_totals_available_identical_to_a_cash_purchase(
+    client, test_user, auth_headers, credit_account
+):
+    from decimal import Decimal
+
+    card, _payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _allocate(client, auth_headers, groceries, "100.00")
+
+    baseline = Decimal(client.get("/api/budget", headers=auth_headers).get_json()["totals"]["available"])
+
+    _card_txn(card.id, "-40.00", category_id=groceries, description="WHOLE FOODS", plaid_transaction_id="g1")
+
+    after = Decimal(client.get("/api/budget", headers=auth_headers).get_json()["totals"]["available"])
+    # Groceries -40, payment envelope +40 → net zero, exactly as a cash buy
+    # would leave it (cash buy: Groceries -40, but the -40 outflow isn't
+    # is_income so ready_to_assign is untouched either way).
+    assert after == baseline
+
+
+def test_card_payment_transfer_reduces_payment_available(client, test_user, auth_headers, credit_account):
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _card_txn(card.id, "-40.00", category_id=groceries, description="WHOLE FOODS", plaid_transaction_id="g1")
+    # Pay $30 onto the card — a transfer inflow on the card side.
+    _card_txn(card.id, "30.00", transfer=True, description="AUTOPAY", plaid_transaction_id="pay1")
+
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    assert Decimal(entry["available"]) == Decimal("10.00")  # 40 owed - 30 paid
+
+
+def test_payment_available_goes_negative_when_spending_outruns_the_budget(
+    client, test_user, auth_headers, credit_account
+):
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    # A card purchase with no envelope funding behind it.
+    _card_txn(card.id, "-75.00", category_id=groceries, description="SPLURGE", plaid_transaction_id="g1")
+
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    # Available is +75 (money owed, set aside conceptually) — the *spending*
+    # category is the one that goes negative here. But once a payment lands
+    # without matching set-aside it flips negative:
+    _card_txn(card.id, "100.00", transfer=True, description="OVERPAY", plaid_transaction_id="pay1")
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    assert Decimal(entry["available"]) == Decimal("-25.00")
+
+
+def test_card_opening_balance_preloads_payment_available_negative(client, test_user, auth_headers):
+    from decimal import Decimal
+    from models import Account, Category
+
+    account = Account(user_id=test_user.id, name="Old Card", type="credit", subtype="credit card", balance=-500)
+    db.session.add(account)
+    db.session.flush()
+    group = Category(user_id=test_user.id, name="Credit Card Payments", position=50)
+    db.session.add(group)
+    db.session.flush()
+    payment_cat = Category(
+        user_id=test_user.id, name="Old Card", parent_id=group.id, payment_account_id=account.id
+    )
+    db.session.add(payment_cat)
+    db.session.commit()
+    # The synthetic opening balance _add_starting_balance would write.
+    _card_txn(account.id, "-500.00", description="Starting Balance", plaid_transaction_id=None)
+
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    assert Decimal(entry["available"]) == Decimal("-500.00")
+
+
+def test_allocating_to_a_payment_category_funds_the_payoff(client, test_user, auth_headers, credit_account):
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _card_txn(card.id, "-40.00", category_id=groceries, description="WHOLE FOODS", plaid_transaction_id="g1")
+
+    resp = _allocate(client, auth_headers, payment_cat.id, "40.00")
+    assert resp.status_code == 200
+
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    assert Decimal(entry["allocated_this_month"]) == Decimal("40.00")
+    assert Decimal(entry["available"]) == Decimal("80.00")  # 40 allocated + 40 owed
+
+
+def test_payment_category_excluded_from_totals_spent(client, test_user, auth_headers, credit_account):
+    from decimal import Decimal
+
+    card, _payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _card_txn(card.id, "-40.00", category_id=groceries, description="WHOLE FOODS", plaid_transaction_id="g1")
+
+    totals = client.get("/api/budget", headers=auth_headers).get_json()["totals"]
+    # Only Groceries' -40 shows as spent — not double-counted via the envelope.
+    assert Decimal(totals["spent"]) == Decimal("-40.00")
+
+
+def test_payment_group_rolls_up_the_envelope_adjustment(client, test_user, auth_headers, credit_account):
+    from decimal import Decimal
+
+    card, _payment_cat, group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _card_txn(card.id, "-40.00", category_id=groceries, description="WHOLE FOODS", plaid_transaction_id="g1")
+
+    group_entry = _budget_entry(client, auth_headers, group.id)
+    assert group_entry["is_group"] is True
+    assert Decimal(group_entry["available"]) == Decimal("40.00")
+
+
+def test_uncategorized_card_interest_stays_out_of_the_envelope(client, test_user, auth_headers, credit_account):
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    # Interest / fee — an uncategorized card outflow, not from an envelope.
+    _card_txn(card.id, "-9.99", category_id=None, description="INTEREST CHARGE", plaid_transaction_id="i1")
+
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    assert Decimal(entry["available"]) == Decimal("0")  # not pulled into moved_in
+
+
+def test_payment_entry_reports_month_scoped_card_activity(client, test_user, auth_headers, credit_account):
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _card_txn(card.id, "-40.00", category_id=groceries, description="THIS MONTH", plaid_transaction_id="g1")
+    _card_txn(card.id, "25.00", transfer=True, description="PAID", plaid_transaction_id="pay1")
+    _card_txn(card.id, "-99.00", category_id=groceries, description="LAST MONTH",
+              posted_at=_prev_month_date(), plaid_transaction_id="g0")
+
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    assert Decimal(entry["card_spending_this_month"]) == Decimal("40.00")  # last month's 99 excluded
+    assert Decimal(entry["card_payments_this_month"]) == Decimal("25.00")
+    assert Decimal(entry["card_balance"]) == Decimal("0")  # fixture account balance
+
+
+def test_cannot_rename_reparent_or_archive_a_payment_category(client, test_user, auth_headers, credit_account):
+    _card, payment_cat, _group = credit_account
+
+    assert _patch_category(client, auth_headers, payment_cat.id, name="Nope").status_code == 400
+    assert _patch_category(client, auth_headers, payment_cat.id, archived=True).status_code == 400
+    assert _patch_category(client, auth_headers, payment_cat.id, parent_id=None).status_code == 400
+    # Reordering is fine.
+    assert _patch_category(client, auth_headers, payment_cat.id, position=0).status_code == 200

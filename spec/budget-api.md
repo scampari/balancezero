@@ -155,6 +155,31 @@ No delete endpoint exists — categories are archived, never removed, so their h
 - **Sibling ordering (006):** `Category.position` (already on the model, previously never written) is now the primary sort key for `GET /api/budget`, `(position, id)`. `PATCH /api/categories/<id>` with `position` moves a category within its `(user_id, parent_id)` sibling group; the handler re-packs the whole group to a gap-free `0..n-1` sequence on every reorder or reparent, so positions never collide or drift. A reparent lands the category at the end of its new group before any `position` in the same request is applied.
 - **`available` is cumulative, `spent_this_month` is month-scoped (006):** `available` = `SUM(all allocations for the category) + SUM(all signed transactions for the category)` — the rolled-over envelope balance, matching `ready_to_assign`'s cumulative semantics and `context/mvp-scope.md`'s "category balance rollover month to month." `spent_this_month` is the only per-category value re-scoped to the requested month. `totals` sums the per-category `allocated_this_month` / `spent_this_month` / `available` over non-archived categories only; parent and child are independent line items so there is no double-count.
 - **Target progress (006):** `monthly_target_amount` keeps its 005 meaning (full target ÷ months, progress-blind) as a baseline. `needed_this_month` is the actionable number: for a dated goal (`yearly`/`custom`), `max(0, (target_amount − funded) ÷ months_remaining)` where `funded` is the category's current envelope balance (`max(0, available)`) — spending against the category lowers `funded`, so the monthly ask rises to compensate (YNAB's model). For a `monthly` goal, `funded` is `allocated_this_month` and `needed_this_month` is `max(0, target_amount − funded)`. `progress` = `min(1, funded ÷ target_amount)`.
+- **Credit-card payment categories (021):** connecting a `type == "credit"`
+  account auto-creates a `Category` with `payment_account_id` set (unique
+  FK → `account.id`), under a dedicated top-level `"Credit Card Payments"`
+  group (see `spec/plaid-sync.md`). `GET /api/budget` gives every entry
+  `is_payment_category` + `payment_account_id`; a payment entry also carries
+  `card_spending_this_month` / `card_payments_this_month` (month-scoped,
+  positive) + `card_balance` (the card's negative balance), with
+  `spent_this_month = "0"` and `target = null`.
+  Its `available` is the cash set aside to pay the card down:
+  `Σ(allocations to P) + moved_in(P) − cc_payments(P) + cc_opening(P)` where
+  `moved_in` = card outflows filed to a *normal* (non-payment) category
+  (Σ of `−amount`), `cc_payments` = transfer inflows onto the card, and
+  `cc_opening` = the card's synthetic negative `"Starting Balance"`. The
+  card **purchase still counts as spend in its own spending category** — it
+  is *not* also subtracted here; the two net out in `totals.available` (one
+  envelope down, the payment envelope up). `totals.spent` **skips** payment
+  categories; `totals.budgeted` / `totals.available` include them.
+  `ready_to_assign` is unaffected (the moves touch neither `is_income` rows
+  nor allocations). The `"Credit Card Payments"` group rolls its children
+  up via the existing 014 mechanism (adjustments are folded into each
+  child's `available` before the roll-up).
+  **Guards:** assigning a transaction to a payment category → `400`
+  (`spec/transactions.md`); `PATCH /api/categories/<id>` changing
+  `name` / `parent_id` / `archived` on one → `400` (`position` allowed);
+  `POST .../allocations` to one is **allowed** (that's how you fund payoff).
 
 ## Tests
 - `tests/test_budget_api.py` § `"test_create_category_with_valid_name_returns_201"` — covers § POST /api/categories contract.
@@ -241,3 +266,16 @@ No delete endpoint exists — categories are archived, never removed, so their h
   still move each side's `Account.balance`. New `Transaction.transfer`
   column + migration `ca283921af94`; set on the Plaid path (see
   `spec/plaid-sync.md`). `tests/test_budget_api.py` +2.
+- 021 (2026-08-27) — YNAB-style credit-card budgeting. `Category.payment_account_id`
+  (nullable, unique FK → `account.id`, ON DELETE SET NULL) + migration
+  `7eb728de0f4a`. `get_budget` folds a per-card `moved_in − cc_payments +
+  cc_opening` adjustment into each payment category's `available` before the
+  group roll-up; new response fields `is_payment_category` /
+  `payment_account_id` / `card_spending_this_month` /
+  `card_payments_this_month` / `card_balance`; `totals.spent` skips payment
+  categories. Guards on `update_category` (name/parent/archived → 400) and
+  transaction assignment (`spec/transactions.md`). `api_helpers.is_payment_category`
+  + `infer_category_id` excludes payment envelopes. Starter tree drops the
+  generic "Credit Card Payment" line. `tests/test_budget_api.py` +14,
+  `tests/test_transactions.py` +2, `tests/test_plaid_sync.py` +2, conftest
+  `credit_account` fixture; `BudgetPage.tsx` payment-row branch; e2e +1.

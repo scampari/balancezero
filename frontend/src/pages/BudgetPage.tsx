@@ -187,7 +187,28 @@ export function BudgetPage() {
   const orphans = budget.categories.filter(
     (c) => c.parent_id != null && !budget.categories.some((p) => p.id === c.parent_id),
   )
-  const moveTargets = topLevel // a category can only be re-parented under a top-level one
+  // The auto-managed "Credit Card Payments" group holds only payment
+  // envelopes — you can't file a category or a transaction under it.
+  const isPaymentGroup = (c: Category) =>
+    budget.categories.some((k) => k.parent_id === c.id && k.is_payment_category)
+  const parentChoices = topLevel.filter((c) => !isPaymentGroup(c))
+  const moveTargets = parentChoices // a category can only be re-parented under a top-level one
+
+  function paymentLine(category: Category) {
+    const available = Number(category.available)
+    return (
+      <div className="flex flex-1 flex-col gap-0.5 text-xs">
+        <span className="text-(--color-text-faint)">
+          Card: {formatMoney(category.card_spending_this_month ?? '0')} spent this month ·{' '}
+          {formatMoney(category.card_payments_this_month ?? '0')} paid
+        </span>
+        <span className={available < 0 ? 'text-(--color-negative)' : 'text-(--color-text-faint)'}>
+          {formatMoney(category.available)} available to pay
+          {available < 0 && ' — debt not covered by your budget'}
+        </span>
+      </div>
+    )
+  }
 
   function targetLine(category: Category) {
     const t = category.target
@@ -224,6 +245,7 @@ export function BudgetPage() {
     const available = Number(category.available)
     const draft = allocationDrafts[category.id]
     const idx = siblings.findIndex((c) => c.id === category.id)
+    const isPayment = category.is_payment_category
     return (
       <li
         key={category.id}
@@ -312,9 +334,9 @@ export function BudgetPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          {targetLine(category)}
+          {isPayment ? paymentLine(category) : targetLine(category)}
           <div className="ml-auto flex items-center gap-1.5">
-            {!category.is_group && (
+            {!category.is_group && !isPayment && (
               <button
                 type="button"
                 onClick={() =>
@@ -325,33 +347,37 @@ export function BudgetPage() {
                 {category.target ? 'Edit target' : 'Set target'}
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                setRenameDraft(category.name)
-                setRenamingId(category.id)
-              }}
-              className={MINI_BTN}
-            >
-              Rename
-            </button>
-            <select
-              aria-label={`Move ${category.name}`}
-              value={category.parent_id ?? ''}
-              onChange={(e) =>
-                applyPatch(category.id, { parent_id: e.target.value === '' ? null : Number(e.target.value) })
-              }
-              className={`${MINI_BTN} appearance-none pr-1`}
-            >
-              <option value="">Top level</option>
-              {moveTargets
-                .filter((p) => p.id !== category.id)
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    Under {p.name}
-                  </option>
-                ))}
-            </select>
+            {!isPayment && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRenameDraft(category.name)
+                    setRenamingId(category.id)
+                  }}
+                  className={MINI_BTN}
+                >
+                  Rename
+                </button>
+                <select
+                  aria-label={`Move ${category.name}`}
+                  value={category.parent_id ?? ''}
+                  onChange={(e) =>
+                    applyPatch(category.id, { parent_id: e.target.value === '' ? null : Number(e.target.value) })
+                  }
+                  className={`${MINI_BTN} appearance-none pr-1`}
+                >
+                  <option value="">Top level</option>
+                  {moveTargets
+                    .filter((p) => p.id !== category.id)
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        Under {p.name}
+                      </option>
+                    ))}
+                </select>
+              </>
+            )}
             <button
               type="button"
               aria-label={`Move ${category.name} up`}
@@ -370,13 +396,15 @@ export function BudgetPage() {
             >
               ↓
             </button>
-            <button
-              type="button"
-              onClick={() => applyPatch(category.id, { archived: true })}
-              className={MINI_BTN}
-            >
-              Archive
-            </button>
+            {!isPayment && (
+              <button
+                type="button"
+                onClick={() => applyPatch(category.id, { archived: true })}
+                className={MINI_BTN}
+              >
+                Archive
+              </button>
+            )}
           </div>
         </div>
 
@@ -513,7 +541,7 @@ export function BudgetPage() {
             className="rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1.5 text-sm text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
           >
             <option value="">Top-level category</option>
-            {topLevel.map((parent) => (
+            {parentChoices.map((parent) => (
               <option key={parent.id} value={parent.id}>
                 Subcategory of {parent.name}
               </option>

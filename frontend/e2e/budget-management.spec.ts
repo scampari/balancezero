@@ -117,4 +117,25 @@ test.describe('budget page — management', () => {
     await row(page, 'Food').getByRole('button', { name: 'Expand Food' }).click()
     await expect(row(page, 'Groceries')).toBeVisible()
   })
+
+  test('a credit-card payment envelope keeps its assign field but not the manage actions', async ({ page }) => {
+    await login(page)
+
+    const cardRow = row(page, 'E2E Rewards Card')
+    await expect(cardRow).toBeVisible()
+
+    // Still fundable…
+    await expect(cardRow.getByLabel('Assign amount for E2E Rewards Card')).toBeVisible()
+    // …but not renameable / movable / archivable, and no target.
+    await expect(cardRow.getByRole('button', { name: 'Rename' })).toHaveCount(0)
+    await expect(cardRow.getByRole('button', { name: 'Archive' })).toHaveCount(0)
+    await expect(cardRow.getByRole('button', { name: 'Set target' })).toHaveCount(0)
+
+    // The card-activity line: $30 spent this month, $30 available to pay it.
+    await expect(cardRow).toContainText('$30.00 spent this month')
+    await expect(cardRow).toContainText('$30.00 available to pay')
+
+    // The "Credit Card Payments" group can't be a parent for a new category.
+    await expect(page.getByRole('option', { name: 'Subcategory of Credit Card Payments' })).toHaveCount(0)
+  })
 })

@@ -166,3 +166,8 @@ length the row resets.
   new user's budget view isn't empty. `tests/test_signup.py` +2, e2e
   `signup.spec.ts` asserts a starter category is visible. Full suite 212
   passed / 6 skipped.
+- 021 (2026-08-27) — the starter tree's generic "Credit Card Payment" line
+  (under "Debt Payments") is removed. Connecting a credit card auto-creates
+  a dedicated "Credit Card Payments" group with one envelope per card
+  (`spec/budget-api.md`, `spec/plaid-sync.md`), so the manual placeholder
+  was a near-duplicate.

@@ -682,3 +682,50 @@ def test_create_manual_transaction_with_a_group_category_returns_400(client, tes
         headers=auth_headers,
     )
     assert response.status_code == 400
+
+
+def _make_payment_category(user_id):
+    """A credit account + its bound payment category (changes/021)."""
+    account = Account(user_id=user_id, name="Rewards Card", type="credit", subtype="credit card")
+    db.session.add(account)
+    db.session.flush()
+    group = Category(user_id=user_id, name="Credit Card Payments")
+    db.session.add(group)
+    db.session.flush()
+    payment_category = Category(
+        user_id=user_id, name="Rewards Card", parent_id=group.id, payment_account_id=account.id
+    )
+    db.session.add(payment_category)
+    db.session.commit()
+    return payment_category
+
+
+def test_patch_transaction_to_a_payment_category_returns_400(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    txn = _make_transaction(account.id, CURRENT_MONTH, "-10.00", "Store")
+    payment_category = _make_payment_category(test_user.id)
+
+    response = client.patch(
+        f"/api/transactions/{txn.id}", json={"category_id": payment_category.id}, headers=auth_headers
+    )
+    assert response.status_code == 400
+    db.session.refresh(txn)
+    assert txn.category_id is None
+
+
+def test_create_manual_transaction_with_a_payment_category_returns_400(client, test_user, auth_headers):
+    account = _make_account(test_user.id)
+    payment_category = _make_payment_category(test_user.id)
+
+    response = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account.id,
+            "posted_at": CURRENT_MONTH.isoformat(),
+            "amount": "-10.00",
+            "description": "Store",
+            "category_id": payment_category.id,
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 400

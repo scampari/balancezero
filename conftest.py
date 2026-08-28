@@ -92,6 +92,33 @@ def invite_code(client):
 
 
 @pytest.fixture()
+def credit_account(client, test_user):
+    """A credit-card Account for `test_user` plus its auto-style "Credit Card
+    Payments" group and bound payment Category — the state _ensure_payment_category
+    would produce, without a sync. Returns (account, payment_category, group)."""
+    from models import Account, Category
+
+    account = Account(
+        user_id=test_user.id, name="Rewards Card", type="credit", subtype="credit card", balance=0
+    )
+    db.session.add(account)
+    db.session.flush()
+    group = Category(user_id=test_user.id, name="Credit Card Payments", position=99)
+    db.session.add(group)
+    db.session.flush()
+    payment_category = Category(
+        user_id=test_user.id,
+        name="Rewards Card",
+        parent_id=group.id,
+        position=0,
+        payment_account_id=account.id,
+    )
+    db.session.add(payment_category)
+    db.session.commit()
+    return account, payment_category, group
+
+
+@pytest.fixture()
 def plaid_item(client, test_user):
     """A linked institution for `test_user` with a real-Fernet-encrypted
     (but fake) access token — for tests that need "already connected" state

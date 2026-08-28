@@ -152,3 +152,8 @@ still has it and changes it, you probably want it back).
   are always false. Surfaced in the `GET /api/transactions` serializer as
   `transfer` and badged on the Transactions page. Budget math excludes
   transfers — see `spec/budget-api.md`. `tests/test_plaid_sync.py` +1, e2e +1.
+- 021 (2026-08-27) — a credit-card *payment* category (auto-created,
+  `payment_account_id` set) can't hold transactions: `PATCH` and
+  `POST /api/transactions` with such a `category_id` → `400`.
+  Auto-categorization skips them too. See `spec/budget-api.md`.
+  `tests/test_transactions.py` +2.

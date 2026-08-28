@@ -558,6 +558,58 @@ def test_sync_depository_account_balance_and_starting_balance_are_unchanged(clie
 
 
 # ---------------------------------------------------------------------------
+# auto-created credit-card payment category (changes/021)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_auto_creates_a_payment_category_for_a_credit_account(client, test_user, auth_headers, monkeypatch):
+    from models import Category
+
+    item = _seed_item(test_user, "item-ccpay")
+
+    class _Card:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts(
+                [_mock_account("acc-card", 300.00, name="Sapphire", type="credit", subtype="credit card")]
+            )
+
+    _patch_client(monkeypatch, _Card())
+    # Two syncs — the category must be created once, not duplicated.
+    client.post("/api/plaid/sync", headers=auth_headers)
+    client.post("/api/plaid/sync", headers=auth_headers)
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-card").first()
+    payment_cats = Category.query.filter_by(user_id=test_user.id, payment_account_id=account.id).all()
+    assert len(payment_cats) == 1
+    payment_cat = payment_cats[0]
+    assert payment_cat.name == "Sapphire"
+
+    group = db.session.get(Category, payment_cat.parent_id)
+    assert group.name == "Credit Card Payments"
+    assert group.parent_id is None
+    # Only one group even across the two syncs.
+    assert Category.query.filter_by(user_id=test_user.id, name="Credit Card Payments").count() == 1
+
+
+def test_sync_does_not_create_a_payment_category_for_a_depository_account(client, test_user, auth_headers, monkeypatch):
+    from models import Category
+
+    item = _seed_item(test_user, "item-nocc")
+
+    class _Checking:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts(
+                [_mock_account("acc-chk", 500.00, type="depository", subtype="checking")]
+            )
+
+    _patch_client(monkeypatch, _Checking())
+    client.post("/api/plaid/sync", headers=auth_headers)
+
+    assert Category.query.filter(Category.payment_account_id.isnot(None)).count() == 0
+    assert Category.query.filter_by(user_id=test_user.id, name="Credit Card Payments").first() is None
+
+
+# ---------------------------------------------------------------------------
 # transfer detection (changes/019)
 # ---------------------------------------------------------------------------
 

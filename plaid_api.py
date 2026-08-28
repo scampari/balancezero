@@ -16,7 +16,7 @@ from plaid.model.transactions_sync_request import TransactionsSyncRequest
 from sqlalchemy.exc import IntegrityError
 
 from api_helpers import current_user_id, infer_category_id
-from models import Account, PlaidItem, Transaction, User, db
+from models import Account, Category, PlaidItem, Transaction, User, db
 
 plaid_bp = Blueprint("plaid_api", __name__, url_prefix="/api/plaid")
 
@@ -261,7 +261,79 @@ def _upsert_account(user, plaid_account, plaid_item):
     db.session.flush()  # so a same-page transaction upsert can use account.id
     if is_new:
         _add_starting_balance(account, plaid_item)
+    if account.type == "credit":
+        _ensure_payment_category(user, account)
     return account
+
+
+# The dedicated top-level group that holds one payment envelope per card
+# (changes/021). Kept distinct from the starter tree's "Debt Payments".
+_PAYMENTS_GROUP_NAME = "Credit Card Payments"
+
+
+def _find_or_create_payments_group(user):
+    group = Category.query.filter_by(
+        user_id=user.id, name=_PAYMENTS_GROUP_NAME, parent_id=None
+    ).first()
+    if group is not None:
+        return group
+    position = db.session.query(db.func.coalesce(db.func.max(Category.position), -1)).filter(
+        Category.user_id == user.id, Category.parent_id.is_(None)
+    ).scalar()
+    group = Category(user_id=user.id, name=_PAYMENTS_GROUP_NAME, parent_id=None, position=position + 1)
+    db.session.add(group)
+    try:
+        db.session.flush()
+    except IntegrityError:
+        # Raced another sync of the same user — reuse the row it created.
+        db.session.rollback()
+        group = Category.query.filter_by(
+            user_id=user.id, name=_PAYMENTS_GROUP_NAME, parent_id=None
+        ).first()
+    return group
+
+
+def _ensure_payment_category(user, account):
+    """Idempotently bind a "Credit Card Payments" envelope to a credit-card
+    account. Called from _upsert_account for every credit account on every
+    sync, so an already-synced card gets its category on the next sync with
+    no backfill migration. The unique constraint on
+    Category.payment_account_id makes a concurrent double-create an
+    IntegrityError we swallow."""
+    existing = Category.query.filter_by(user_id=user.id, payment_account_id=account.id).first()
+    if existing is not None:
+        return existing
+
+    group = _find_or_create_payments_group(user)
+    child_position = db.session.query(db.func.coalesce(db.func.max(Category.position), -1)).filter(
+        Category.user_id == user.id, Category.parent_id == group.id
+    ).scalar()
+    category = Category(
+        user_id=user.id,
+        name=_payment_category_name(user, account),
+        parent_id=group.id,
+        position=child_position + 1,
+        payment_account_id=account.id,
+    )
+    db.session.add(category)
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        return Category.query.filter_by(user_id=user.id, payment_account_id=account.id).first()
+    return category
+
+
+def _payment_category_name(user, account):
+    """The card's own name, unless a category already owns it — then suffix
+    to dodge the (user_id, name) unique constraint."""
+    base = account.name or "Credit Card"
+    name = base
+    suffix = 2
+    while Category.query.filter_by(user_id=user.id, name=name).first() is not None:
+        name = f"{base} ({suffix})"
+        suffix += 1
+    return name
 
 
 def _add_starting_balance(account, plaid_item):
