@@ -301,3 +301,13 @@ server-side logging of the swallowed exception in `sync()`.
   "import everything" (that let a pre-011 item pull ~3 months on its first
   sync). `_import_cutoff(item)` returns `item.import_cutoff or
   item.created_at.date()`, and migration `8c14d99893c5` backfills the NULLs.
+- 018 (2026-08-27) — account types + liability balances. `_upsert_account`
+  now writes `Account.type` / `Account.subtype` from Plaid's
+  classification (every sync, so pre-018 rows self-heal). For a `type` of
+  `credit` or `loan` the balance is stored **negated** (`-abs(current)`) —
+  Plaid reports a card's balance as a positive amount owed; this app's
+  convention is that a balance is what you have. `_add_starting_balance`
+  for a liability account writes the opening entry negative and
+  `is_income=false` (carried debt, not money to budget). Migration
+  `079c5813dbbb` (pure DDL). Depository accounts unchanged.
+  `tests/test_plaid_sync.py` +3.

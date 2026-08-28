@@ -21,6 +21,46 @@ function formatDate(value: string): string {
   return new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
+// A liability's balance is stored negative — money you owe, not money you have.
+function isLiability(account: Account): boolean {
+  return account.type === 'credit' || account.type === 'loan'
+}
+
+// Human label for an account's kind. Prefer Plaid's specific `subtype`
+// ("checking", "credit card"), fall back to the coarse `type`.
+function accountTypeLabel(account: Account): string | null {
+  const raw = account.subtype ?? account.type
+  if (!raw) return null
+  return raw.replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+const UNLINKED_GROUP_KEY = 'unlinked'
+
+interface AccountGroup {
+  key: string
+  name: string
+  accounts: Account[]
+}
+
+// Group the account cards by linked institution, in the institutions-list
+// order, with any demo/manual/unlinked accounts last under "Not linked".
+function groupAccountsByInstitution(accounts: Account[], institutions: PlaidInstitution[]): AccountGroup[] {
+  const groups: AccountGroup[] = []
+  for (const institution of institutions) {
+    const owned = accounts.filter((account) => account.plaid_item_id === institution.id)
+    if (owned.length > 0) {
+      groups.push({ key: String(institution.id), name: institution.institution_name, accounts: owned })
+    }
+  }
+  const unlinked = accounts.filter(
+    (account) => account.plaid_item_id === null || !institutions.some((i) => i.id === account.plaid_item_id),
+  )
+  if (unlinked.length > 0) {
+    groups.push({ key: UNLINKED_GROUP_KEY, name: 'Not linked', accounts: unlinked })
+  }
+  return groups
+}
+
 export function AccountsPage() {
   const { accessToken, setAccessToken, isAuthChecked } = useAuth()
   const navigate = useNavigate()
@@ -181,21 +221,46 @@ export function AccountsPage() {
             : 'No accounts yet. Connect a bank to get started.'}
         </div>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {accounts.map((account) => (
-            <div key={account.id} className="rounded-xl border border-(--color-border) bg-(--color-surface) p-4">
-              <p className="text-sm font-medium text-(--color-text)">{account.name}</p>
-              <p className="tabular-nums mt-2 text-2xl font-semibold text-(--color-text)">
-                {formatMoney(account.balance)}
-              </p>
-              {account.available_balance !== null && account.available_balance !== account.balance && (
-                <p className="tabular-nums mt-0.5 text-xs text-(--color-text-muted)">
-                  {formatMoney(account.available_balance)} available
-                </p>
-              )}
-              <p className="mt-3 text-xs text-(--color-text-faint)">
-                {account.balance_date ? `Updated ${formatDate(account.balance_date)}` : 'Never synced'}
-              </p>
+        <div className="space-y-6">
+          {groupAccountsByInstitution(accounts, institutions).map((group) => (
+            <div key={group.key} data-account-group={group.name}>
+              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-(--color-text-faint)">
+                {group.name}
+              </h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {group.accounts.map((account) => {
+                  const typeLabel = accountTypeLabel(account)
+                  return (
+                    <div
+                      key={account.id}
+                      data-account-type={account.type ?? ''}
+                      className="rounded-xl border border-(--color-border) bg-(--color-surface) p-4"
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p className="text-sm font-medium text-(--color-text)">{account.name}</p>
+                        {typeLabel && (
+                          <span className="shrink-0 text-xs text-(--color-text-faint)">{typeLabel}</span>
+                        )}
+                      </div>
+                      <p
+                        className={`tabular-nums mt-2 text-2xl font-semibold ${
+                          isLiability(account) ? 'text-(--color-negative)' : 'text-(--color-text)'
+                        }`}
+                      >
+                        {formatMoney(account.balance)}
+                      </p>
+                      {account.available_balance !== null && account.available_balance !== account.balance && (
+                        <p className="tabular-nums mt-0.5 text-xs text-(--color-text-muted)">
+                          {formatMoney(account.available_balance)} available
+                        </p>
+                      )}
+                      <p className="mt-3 text-xs text-(--color-text-faint)">
+                        {account.balance_date ? `Updated ${formatDate(account.balance_date)}` : 'Never synced'}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           ))}
         </div>

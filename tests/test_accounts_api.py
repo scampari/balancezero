@@ -12,10 +12,13 @@ from models import Account, User, db
 from werkzeug.security import generate_password_hash
 
 
-def _make_account(user_id, name="Checking", balance="500.00", plaid_account_id=None):
+def _make_account(user_id, name="Checking", balance="500.00", plaid_account_id=None,
+                  type="depository", subtype="checking"):
     account = Account(
         user_id=user_id,
         name=name,
+        type=type,
+        subtype=subtype,
         currency="USD",
         balance=Decimal(balance),
         available_balance=Decimal(balance),
@@ -74,6 +77,19 @@ def test_list_accounts_without_token_returns_401(client, test_user):
 
     # Assert
     assert response.status_code == 401
+
+
+def test_list_accounts_includes_type_and_subtype(client, test_user, auth_headers):
+    # Arrange
+    _make_account(test_user.id, name="Rewards Card", type="credit", subtype="credit card")
+
+    # Act
+    response = client.get("/api/accounts", headers=auth_headers)
+
+    # Assert
+    account = response.get_json()["accounts"][0]
+    assert account["type"] == "credit"
+    assert account["subtype"] == "credit card"
 
 
 def test_list_accounts_excludes_plaid_account_id(client, test_user, auth_headers):

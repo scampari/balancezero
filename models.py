@@ -37,6 +37,14 @@ class Account(db.Model):
         db.Integer, db.ForeignKey("plaid_item.id", ondelete="SET NULL"), nullable=True
     )
     name = db.Column(db.String(120), nullable=False)
+    # Plaid's account classification, stored verbatim (changes/018). `type` is
+    # the coarse bucket ("depository", "credit", "loan", "investment"), `subtype`
+    # the specific kind ("checking", "savings", "credit card", ...). Null for
+    # demo/manual accounts and for rows synced before this column existed.
+    # A `type` of "credit" or "loan" marks a liability: its balance is stored
+    # negative (see plaid_api._upsert_account) so it nets correctly everywhere.
+    type = db.Column(db.String(20), nullable=True)
+    subtype = db.Column(db.String(40), nullable=True)
     currency = db.Column(db.String(3), nullable=False, default="USD")
     balance = db.Column(db.Numeric(12, 2), nullable=False, default=0)
     available_balance = db.Column(db.Numeric(12, 2), nullable=True)

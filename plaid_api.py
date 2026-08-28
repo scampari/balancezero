@@ -213,6 +213,32 @@ def remove_item(item_id):
     return jsonify({"status": "removed"}), 200
 
 
+# Plaid `type` values whose balance is a debt, not an asset. Their
+# `balances.current` comes back as a positive "amount owed"; this app's
+# convention is that a balance is what you *have*, so we store it negative.
+_LIABILITY_TYPES = ("credit", "loan")
+
+
+def _plaid_str(value):
+    """Plaid's SDK hands back enum-like objects for `type` / `subtype` whose
+    `str()` is the wire value ("depository", "credit card", ...). Normalize to
+    a plain lowercase string, or None when absent."""
+    if value is None:
+        return None
+    return str(value).lower() or None
+
+
+def _normalize_balance(account_type, current):
+    """Store a liability's balance as a negative number. Plaid reports a
+    credit-card / loan `balances.current` as a positive amount owed; flipping
+    it here means it sums correctly with asset balances and doesn't inflate
+    the budget's Ready-to-Assign via the synthetic Starting Balance."""
+    amount = current or 0
+    if account_type in _LIABILITY_TYPES:
+        return -abs(amount)
+    return amount
+
+
 def _upsert_account(user, plaid_account, plaid_item):
     """Returns the local Account row for this Plaid account, creating it if
     new. Balances are always overwritten (Plaid-owned, never user-edited).
@@ -227,8 +253,10 @@ def _upsert_account(user, plaid_account, plaid_item):
         db.session.add(account)
     account.plaid_item_id = plaid_item.id
     account.name = plaid_account["name"]
+    account.type = _plaid_str(plaid_account.get("type"))
+    account.subtype = _plaid_str(plaid_account.get("subtype"))
     account.currency = balances["iso_currency_code"] or account.currency
-    account.balance = balances["current"] or 0
+    account.balance = _normalize_balance(account.type, balances["current"])
     account.available_balance = balances["available"]
     db.session.flush()  # so a same-page transaction upsert can use account.id
     if is_new:
@@ -243,9 +271,15 @@ def _add_starting_balance(account, plaid_item):
     the connection are never pulled, so without this the balance would
     silently vanish from the budget. Dated at the connection date. Only
     created on account creation, so re-syncing never adds a second one;
-    skipped for a zero balance (nothing to reconcile)."""
+    skipped for a zero balance (nothing to reconcile).
+
+    For a liability account (credit card / loan) the balance is stored
+    negative, and the opening entry is *not* income — it's the debt you're
+    carrying into the budget, not money to assign. For a depository account
+    it's the positive "To Be Budgeted" inflow as before."""
     if not account.balance:
         return
+    is_liability = account.type in _LIABILITY_TYPES
     db.session.add(
         Transaction(
             account_id=account.id,
@@ -255,7 +289,7 @@ def _add_starting_balance(account, plaid_item):
             amount=account.balance,
             description="Starting Balance",
             pending=False,
-            is_income=True,
+            is_income=not is_liability,
         )
     )
 

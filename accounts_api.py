@@ -18,6 +18,11 @@ def list_accounts():
                     {
                         "id": account.id,
                         "name": account.name,
+                        # Plaid's classification (changes/018) — lets the UI
+                        # label an account and render a liability's balance as
+                        # what it is. Null for demo/manual/pre-018 rows.
+                        "type": account.type,
+                        "subtype": account.subtype,
                         "currency": account.currency,
                         "balance": str(account.balance),
                         "available_balance": str(account.available_balance)
