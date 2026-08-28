@@ -427,6 +427,11 @@ _EMPTY_COUNTERS = {
     "transactions_added": 0,
     "transactions_modified": 0,
     "transactions_removed": 0,
+    # changes/022 — an incoming transaction merged into a pre-existing manual
+    # row instead of inserted as a new one. The adoption logic that increments
+    # this is build's job; the key lives here now so the per-item result dict,
+    # totals accumulation, and mutation-during-pagination reset all carry it.
+    "transactions_linked": 0,
 }
 
 

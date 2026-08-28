@@ -43,7 +43,10 @@ ever a stub, never built).
 >   on create **and** update (heals backfilled / re-linked rows).
 > - **Response:** `{"items":[{id, institution_name, status:"ok"|"error",
 >   error?, accounts_synced, transactions_added, transactions_modified,
->   transactions_removed}], "totals":{<summed counts>}, "ok": <all ok>}`.
+>   transactions_removed, transactions_linked}], "totals":{<summed counts>},
+>   "ok": <all ok>}`. `transactions_linked` (added `changes/022`) counts
+>   incoming transactions that were merged into a pre-existing manual row
+>   rather than inserted as a new row — see § Manual-transaction adoption.
 > - **Status codes:** no `PlaidItem` rows → `409` (unchanged); ≥1 item
 >   synced → `200` (with `ok` reflecting whether any failed); **every**
 >   item failed → `502`; demo → `403`.
@@ -65,7 +68,9 @@ write, so the access token is real and usable against Sandbox).
 **Input:** No body.
 **Expected output:** `200`, JSON
 `{"accounts_synced": <int>, "transactions_added": <int>,
-"transactions_modified": <int>, "transactions_removed": <int>}`.
+"transactions_modified": <int>, "transactions_removed": <int>,
+"transactions_linked": <int>}` (per-item and summed into `totals` — see the
+`changes/008` rewrite note above for the full multi-item shape).
 **Side effects:** Decrypts the stored `access_token`, calls
 `/transactions/sync` with `cursor=User.plaid_sync_cursor` (`None` on first
 sync), looping while the response's `has_more` is `true` — accumulating
@@ -101,6 +106,113 @@ After each page, `User.plaid_sync_cursor` is updated to that page's
   cursor position (see Done-when) — a retried sync resumes, doesn't
   restart.
 
+#### Manual-transaction adoption (changes/022)
+
+A user can enter a transaction manually (`POST /api/transactions`,
+`plaid_transaction_id = null`) before the bank posts it. When the posted
+transaction later arrives from Plaid, sync **adopts** the manual row in
+place instead of inserting a second row that double-counts the money.
+
+**Where:** inside `_upsert_transaction`, on the path that would otherwise
+create a brand-new row (no existing row for `(account_id,
+plaid_transaction_id)`). Applies to entries from **both** the `added` and
+the `modified` loop — a transaction first seen while `pending` (held back
+by `changes/015`) can arrive as a `modified` the first time it's eligible
+to import.
+
+**Match rule** — an incoming Plaid transaction adopts a manual row only
+when **every** condition holds:
+- same resolved `account_id`;
+- `Transaction.plaid_transaction_id IS NULL` (not already linked);
+- `Transaction.amount == -Decimal(str(plaid_txn["amount"]))` exactly — this
+  app's sign convention, negated from Plaid's the same way the upsert
+  negates it (see Notes, "Sign convention is flipped"). No tolerance.
+- `abs(Transaction.posted_at - plaid_txn["date"]) <= 7 days`;
+- normalized description similarity `>= 0.80` —
+  `difflib.SequenceMatcher(None, a, b).ratio()` on each side lower-cased
+  and reduced to alphanumerics separated by single spaces. **No substring
+  shortcut** (a bare "Amazon" vs "AMAZON MKTPL\*1A2B" does *not* match).
+  This is the strict end of the dial, chosen deliberately: it will miss a
+  match whenever the typed description differs a lot from the bank's
+  merchant string, and the user accepted that in exchange for near-zero
+  false positives.
+- the row's `description` is not the synthetic `"Starting Balance"`
+  sentinel (`changes/012`) — that row is never adopted.
+
+**Ambiguity resolution:** if more than one manual row qualifies, adopt the
+one with the smallest date distance; break ties by highest similarity
+ratio, then lowest `id`. Exactly one manual row is adopted per incoming
+Plaid transaction; other qualifying rows are left as-is (the user deletes
+any leftover near-duplicate themselves).
+
+**On adoption:** the manual row's `plaid_transaction_id` is stamped and its
+Plaid-owned fields (`amount`, `description`, `posted_at`, `pending`,
+`transfer`) are overwritten from the Plaid payload. `category_id` and
+`is_income` are **never** touched — same invariant that protects a
+categorized synced row from a later `modified`. `infer_category_id` does
+**not** run on an adopted row (the manual row already carries whatever
+category the user or the manual-add path gave it). `created_at` keeps the
+manual row's original value.
+
+**Counting:** an adopted transaction increments `transactions_linked` for
+that item — never `transactions_added` or `transactions_modified`. The
+counter is part of `_EMPTY_COUNTERS`, so the mutation-during-pagination
+reset zeroes it and the per-item `totals` accumulation sums it with no
+special-casing.
+
+**Idempotency & removal:** once adopted the row has a
+`plaid_transaction_id`, so every later sync finds it by id on the normal
+`modified` path — it is never re-matched and never re-counted as linked. A
+subsequent Plaid `removed` for that `transaction_id` hard-deletes the row
+like any other synced transaction (it *is* that transaction now).
+
+No migration: `plaid_transaction_id` is already nullable, and stamping it
+can't violate `uq_transaction_account_plaid_id` because adoption only runs
+when no row matched that `(account_id, plaid_transaction_id)` to begin
+with.
+
+**Cases** (all offline — mocked `transactions_sync`, real DB, seeded
+`PlaidItem` + `Account`, same harness as the `changes/008`+ offline tests):
+
+1. **Close match is adopted.** A manual row on the synced account with the
+   exact (negated) amount, `posted_at` 3 days before the Plaid `date`, a
+   description that normalizes to `>= 0.80` similarity, and a user-assigned
+   `category_id`. Incoming `added` entry for the posted transaction.
+   **Then:** no new `Transaction` row is created (row count for the account
+   is unchanged); the manual row now has the Plaid `transaction_id`;
+   `category_id` is unchanged; `amount`, `description`, `posted_at`,
+   `pending`, `transfer` now equal the Plaid values; response
+   `transactions_linked == 1` and `transactions_added == 0` for that item.
+2. **Amount mismatch → not adopted.** Manual row identical to case 1 except
+   the amount differs by `0.01`. **Then:** a new row is inserted,
+   `transactions_added == 1`, `transactions_linked == 0`, the manual row is
+   untouched (`plaid_transaction_id` still `null`).
+3. **Outside the date window → not adopted.** Manual row identical to case
+   1 except `posted_at` is 10 days from the Plaid `date`. **Then:** a new
+   row is inserted; the manual row is untouched.
+4. **Dissimilar description → not adopted.** Manual row identical to case 1
+   except the description normalizes to `< 0.80` similarity. **Then:** a
+   new row is inserted; the manual row is untouched.
+5. **Ambiguous → closest wins.** Two manual rows both satisfy the rule; one
+   is 1 day from the Plaid `date`, the other 5 days. **Then:** only the
+   1-day row is adopted (`plaid_transaction_id` stamped); the 5-day row
+   stays manual (`plaid_transaction_id` still `null`); `transactions_linked
+   == 1`.
+6. **"Starting Balance" is never adopted.** The synthetic opening row
+   (`description == "Starting Balance"`, `plaid_transaction_id null`) whose
+   amount and date happen to line up with an incoming transaction. **Then:**
+   a new row is inserted for the incoming transaction; the Starting Balance
+   row is untouched.
+7. **Already-linked row on re-sync.** A row that already has a
+   `plaid_transaction_id` (from a prior adoption or a normal import); the
+   next sync delivers that `transaction_id` in `modified`. **Then:** the
+   existing row is updated on the normal `modified` path, no duplicate is
+   created, `transactions_linked == 0`.
+8. **Pre-entered income is adopted.** A manual row with `is_income == true`
+   and `category_id == null` (a paycheck entered before it lands) that
+   satisfies the match rule. **Then:** the row is adopted, `is_income`
+   stays `true`, `category_id` stays `null`, `transactions_linked == 1`.
+
 ## Tests
 - `tests/test_plaid_sync.py` § `"test_sync_without_token_returns_401"` —
   covers § error case: no access token.
@@ -127,6 +239,41 @@ After each page, `User.plaid_sync_cursor` is updated to that page's
 - `tests/test_plaid_sync.py` § `"test_sync_deletes_removed_transaction"` —
   covers § contract: hard-delete on `removed`. Mocked second sync call,
   same reasoning as above.
+- `tests/test_plaid_sync.py` § `"test_sync_adopts_a_matching_manual_row_and_is_idempotent_on_resync"`
+  — covers § Manual-transaction adoption cases 1 + 7: the adopt itself
+  (no new row, id stamped, `category_id` kept, Plaid fields applied) and
+  idempotency when the transaction is re-delivered as `modified`.
+- `tests/test_plaid_sync.py` § `"test_sync_requires_an_exact_amount_match_to_adopt"`
+  — covers § case 2: a cent-off row is not adopted even when its date is
+  closer.
+- `tests/test_plaid_sync.py` § `"test_sync_only_adopts_within_a_seven_day_window"`
+  — covers § case 3: a row 10 days out is excluded even with a perfect
+  description.
+- `tests/test_plaid_sync.py` § `"test_sync_requires_description_similarity_to_adopt"`
+  — covers § case 4: a `< 0.80` description is not adopted even on an
+  exact-date, exact-amount row.
+- `tests/test_plaid_sync.py` § `"test_sync_adopts_the_closest_candidate_when_several_qualify"`
+  — covers § case 5: nearer date wins among qualifying rows.
+- `tests/test_plaid_sync.py` § `"test_sync_never_adopts_the_synthetic_starting_balance_row"`
+  — covers § case 6: the reserved `"Starting Balance"` description is never
+  a candidate; a non-reserved lookalike is.
+- `tests/test_plaid_sync.py` § `"test_sync_keeps_an_already_linked_row_on_the_normal_modified_path"`
+  — covers § case 7: a row that already has a `plaid_transaction_id` goes
+  through the normal `modified` upsert, `transactions_linked` unaffected by
+  it.
+- `tests/test_plaid_sync.py` § `"test_sync_preserves_is_income_when_adopting_a_manual_row"`
+  — covers § case 8: a pre-entered income row keeps `is_income` / null
+  `category_id` through adoption.
+- `tests/test_api_helpers.py` § `"TestDescriptionSimilarity"` — covers the
+  `description_similarity` helper: case/punctuation normalization, the
+  ratio being `difflib` on the normalized text, and pairs either side of
+  the `0.80` line.
+
+All 14 confirmed red before commit — the 8 sync cases fail
+`transactions_linked == 1` (`0 == 1`, adoption not implemented); the 6
+helper cases fail `AttributeError` (`description_similarity` doesn't exist
+yet). Rest of `tests/test_plaid_sync.py` unaffected (24 passed / 2
+Sandbox-skipped).
 
 8 of 8 confirmed red (404, no route yet) before commit — verified with
 real Plaid Sandbox credentials (not just structurally; the 5
@@ -326,3 +473,14 @@ server-side logging of the swallowed exception in `sync()`.
   duplicates. No backfill migration: the hook runs for every credit
   account on every sync. Depository/loan accounts get nothing.
   `tests/test_plaid_sync.py` +2. Budget math in `spec/budget-api.md`.
+- 022 (2026-08-28) — contract landed: manual-transaction adoption. Before
+  `_upsert_transaction` inserts a new row it tries to adopt an unlinked
+  manual row on the same account (exact negated amount, `posted_at` within
+  7 days, `difflib` description similarity `>= 0.80` with no substring
+  shortcut, never the `"Starting Balance"` sentinel; closest date wins
+  ties). Adoption stamps `plaid_transaction_id` and overwrites the
+  Plaid-owned fields only — `category_id` / `is_income` survive,
+  `infer_category_id` is skipped. New `transactions_linked` counter in
+  `_EMPTY_COUNTERS`, per-item results, and `totals`. No migration
+  (`plaid_transaction_id` already nullable). See § Manual-transaction
+  adoption and `changes/022-link-manual-on-sync/plan.md`. Not yet built.
