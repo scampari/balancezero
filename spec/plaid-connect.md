@@ -121,6 +121,45 @@ is set. Never includes `access_token` or `item_id`.
 #### Error cases
 - **When no/invalid access token, Then** `401`.
 
+### POST /api/plaid/items/&lt;int:item_id&gt;/update-link-token
+
+> Added `changes/023` — "add accounts at an already-linked bank." Plaid Link
+> **update mode with account selection** re-opens Link for an existing Item so
+> the user can authorize additional accounts. The Item's `access_token` does
+> **not** change and no `public_token` is returned — there is no exchange step
+> and no new `PlaidItem`. The newly-authorized accounts flow in through the
+> next `POST /api/plaid/sync` (see `spec/plaid-sync.md` § Per-account import
+> cutoff).
+
+**Setup:** An authenticated, non-demo user who owns a `PlaidItem` (seeded row
+with a real-Fernet-encrypted token, the `plaid_item` fixture).
+**Action:** `POST /api/plaid/items/<item_id>/update-link-token`,
+`Authorization: Bearer <access token>`.
+**Input:** No body.
+**Expected output:** `200`, JSON `{"link_token": "<token>"}`. Response never
+includes the `access_token`.
+**Side effects:** None (no DB write). One stateless call to Plaid's
+`/link/token/create` carrying `access_token` (decrypted from the item) and
+`update.account_selection_enabled = true`, with **no `products`** — otherwise
+the same args as `POST /api/plaid/link-token` (`client_name`,
+`country_codes`, `language`, `user`, and `redirect_uri` only when
+`PLAID_REDIRECT_URI` is configured).
+
+#### Error cases
+- **When no/invalid access token, Then** `401`.
+- **When the authenticated user is the demo user, Then** `403` — same
+  `_load_non_demo_user()` guard as every other write route here.
+- **When `item_id` names no `PlaidItem`, Then** `404` —
+  `"no such linked institution"`, same body as `DELETE /api/plaid/items/<id>`.
+- **When the `PlaidItem` belongs to another user, Then** `403`, same body —
+  ownership by direct column comparison (`item.user_id != user.id`), the IDOR
+  pattern from `context/security-requirements.md`. The route must not reach
+  the Plaid call.
+- **When Plaid's `/link/token/create` fails (bad credentials, Plaid outage —
+  `ApiException` or a raw network error), Then** `502`, sanitized
+  `_GENERIC_PLAID_ERROR` — same "never relay the provider's raw error"
+  discipline as `create_link_token`.
+
 ## Tests
 - `tests/test_plaid_connect.py` § `"test_link_token_created_for_authenticated_user"`
   — covers § POST /link-token contract.
@@ -144,6 +183,24 @@ is set. Never includes `access_token` or `item_id`.
   / `"test_status_returns_true_after_connecting"` — covers § GET /status contract.
 - `tests/test_plaid_connect.py` § `"test_status_without_token_returns_401"` —
   covers § GET /status error case: no token.
+- `tests/test_plaid_connect.py` § `"test_update_link_token_returns_a_link_token_for_the_owned_item"`
+  — covers § POST /api/plaid/items/&lt;id&gt;/update-link-token contract
+  (200 + `link_token`, no `access_token` in body, Plaid called once, no DB
+  mutation). Offline — stubbed `_plaid_client`.
+- `tests/test_plaid_connect.py` § `"test_update_link_token_without_token_returns_401"`
+  — covers § error case: no access token.
+- `tests/test_plaid_connect.py` § `"test_update_link_token_as_demo_user_returns_403"`
+  — covers § error case: demo user.
+- `tests/test_plaid_connect.py` § `"test_update_link_token_for_unknown_item_returns_404"`
+  — covers § error case: unknown `item_id`.
+- `tests/test_plaid_connect.py` § `"test_update_link_token_for_another_users_item_returns_403"`
+  — covers § error case: item owned by another user (IDOR); asserts the
+  Plaid call is never reached.
+- `tests/test_plaid_connect.py` § `"test_update_link_token_sanitizes_a_plaid_failure_to_502"`
+  — covers § error case: Plaid `/link/token/create` raises (sanitized 502).
+- `tests/test_plaid_connect.py` § `"test_update_link_token_end_to_end_against_sandbox"`
+  — covers § contract against real Plaid Sandbox (`@requires_plaid_sandbox`):
+  real `/connect` then a real update-mode `/link/token/create`.
 
 9 of 12 confirmed red (404, no routes yet) before implementation — full
 suite run (65 pre-existing tests, all still passing; 22.69s).
@@ -286,3 +343,12 @@ credentials set — it's not dead code, just not currently exercised.
   (`_import_cutoff`) and via a one-off backfill (migration `8c14d99893c5`,
   `UPDATE ... SET import_cutoff = created_at::date WHERE import_cutoff IS
   NULL`). A NULL cutoff can never again mean unbounded history.
+- 023 (2026-08-28) — contract landed by test-planning. New route
+  `POST /api/plaid/items/<id>/update-link-token` mints an update-mode
+  link_token (`update.account_selection_enabled=true`, no `products`, item's
+  stored `access_token`) so a user can add accounts at an already-linked
+  bank. Same demo / `404` / IDOR `403` / sanitized `502` guards as
+  `DELETE /api/plaid/items/<id>`. No `/connect` or `/status` change — update
+  mode returns no `public_token`. Paired with `spec/plaid-sync.md` §
+  Per-account import cutoff. Plan:
+  `changes/023-add-accounts-update-mode/plan.md`. Not yet built.

@@ -327,3 +327,137 @@ def test_reconnect_does_not_move_the_import_cutoff(client, test_user, auth_heade
 
     db.session.refresh(plaid_item)
     assert plaid_item.import_cutoff == earlier  # unchanged on re-link
+
+
+# ---------------------------------------------------------------------------
+# POST /api/plaid/items/<id>/update-link-token  (changes/023 — add accounts
+# at an already-linked bank via Plaid Link update mode)
+# ---------------------------------------------------------------------------
+
+
+class _StubLinkTokenClient:
+    """Stands in for the Plaid SDK client's link_token_create. Records the
+    request it was handed, or raises a supplied exception to simulate a Plaid
+    failure. Has no other methods, so any code path that tries to exchange a
+    token or remove an item against this stub fails loudly."""
+
+    def __init__(self, link_token="link-sandbox-update-x", raises=None):
+        self._link_token = link_token
+        self._raises = raises
+        self.calls = []
+
+    def link_token_create(self, request):
+        self.calls.append(request)
+        if self._raises is not None:
+            raise self._raises
+        return {"link_token": self._link_token}
+
+
+def test_update_link_token_returns_a_link_token_for_the_owned_item(
+    client, test_user, auth_headers, plaid_item, monkeypatch
+):
+    # Arrange — the user owns `plaid_item`; stub Plaid's link_token_create.
+    stub = _StubLinkTokenClient(link_token="link-sandbox-update-abc")
+    _stub_plaid(monkeypatch, stub)
+    original_token = plaid_item.access_token_encrypted
+
+    # Act
+    response = client.post(
+        f"/api/plaid/items/{plaid_item.id}/update-link-token", headers=auth_headers
+    )
+
+    # Assert — contract response shape
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["link_token"] == "link-sandbox-update-abc"
+    assert "access_token" not in body
+
+    # Assert — Plaid was actually called exactly once
+    assert len(stub.calls) == 1
+
+    # Assert side effects — nothing persisted / mutated
+    items = PlaidItem.query.filter_by(user_id=test_user.id).all()
+    assert len(items) == 1
+    db.session.refresh(items[0])
+    assert items[0].access_token_encrypted == original_token
+
+
+def test_update_link_token_without_token_returns_401(client, test_user, plaid_item):
+    assert client.post(f"/api/plaid/items/{plaid_item.id}/update-link-token").status_code == 401
+
+
+def test_update_link_token_as_demo_user_returns_403(client, demo_auth_headers):
+    response = client.post("/api/plaid/items/1/update-link-token", headers=demo_auth_headers)
+    assert response.status_code == 403
+
+
+def test_update_link_token_for_unknown_item_returns_404(client, test_user, auth_headers):
+    response = client.post("/api/plaid/items/999999/update-link-token", headers=auth_headers)
+    assert response.status_code == 404
+    assert "error" in response.get_json()
+
+
+def test_update_link_token_for_another_users_item_returns_403(
+    client, test_user, auth_headers, monkeypatch
+):
+    # Arrange — an item owned by a different user; Plaid must never be reached.
+    other = User(username="other-update", password_hash=generate_password_hash("x" * 12))
+    db.session.add(other)
+    db.session.flush()
+    theirs = PlaidItem(
+        user_id=other.id, plaid_item_id="theirs-update", access_token_encrypted=b"x"
+    )
+    db.session.add(theirs)
+    db.session.commit()
+    _stub_plaid(
+        monkeypatch,
+        _StubLinkTokenClient(raises=AssertionError("Plaid must not be called for a non-owned item")),
+    )
+
+    # Act
+    response = client.post(
+        f"/api/plaid/items/{theirs.id}/update-link-token", headers=auth_headers
+    )
+
+    # Assert
+    assert response.status_code == 403
+
+
+def test_update_link_token_sanitizes_a_plaid_failure_to_502(
+    client, test_user, auth_headers, plaid_item, monkeypatch
+):
+    # Arrange — Plaid's link_token_create raises a raw network error.
+    _stub_plaid(
+        monkeypatch, _StubLinkTokenClient(raises=ConnectionError("simulated Plaid outage"))
+    )
+
+    # Act
+    response = client.post(
+        f"/api/plaid/items/{plaid_item.id}/update-link-token", headers=auth_headers
+    )
+
+    # Assert — generic sanitized error, never the raw exception
+    assert response.status_code == 502
+    assert "error" in response.get_json()
+
+
+@requires_plaid_sandbox
+def test_update_link_token_end_to_end_against_sandbox(client, test_user, auth_headers):
+    # Arrange — a real linked Sandbox Item.
+    connect_response = client.post(
+        "/api/plaid/connect",
+        json={"public_token": _create_sandbox_public_token()},
+        headers=auth_headers,
+    )
+    assert connect_response.status_code == 200
+    item_id = connect_response.get_json()["item"]["id"]
+
+    # Act — mint an update-mode link_token for that Item (real Plaid call).
+    response = client.post(
+        f"/api/plaid/items/{item_id}/update-link-token", headers=auth_headers
+    )
+
+    # Assert
+    assert response.status_code == 200
+    link_token = response.get_json()["link_token"]
+    assert isinstance(link_token, str) and link_token

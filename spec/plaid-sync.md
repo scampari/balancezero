@@ -213,6 +213,92 @@ with.
    satisfies the match rule. **Then:** the row is adopted, `is_income`
    stays `true`, `category_id` stays `null`, `transactions_linked == 1`.
 
+#### Per-account import cutoff (changes/023)
+
+When a user adds accounts to an already-linked bank via Plaid Link update
+mode (`spec/plaid-connect.md` § POST /api/plaid/items/&lt;id&gt;/update-link-token),
+the new accounts arrive on the **next** `/api/plaid/sync` — Plaid replays
+their history as `added` entries on the Item's existing cursor. Without a
+per-account cutoff, an account added months after first link would dump up to
+~90 days of history into the budget. So a newly-added account tracks from the
+day it is added, while the accounts present at first link keep the Item-level
+`import_cutoff`.
+
+**Schema:** new `Account.import_cutoff` (Date, **nullable**, no backfill
+migration — pure DDL, one column). `NULL` means "no per-account cutoff — use
+the Item's."
+
+**Effective cutoff:** `_account_import_cutoff(account, item)` returns
+`account.import_cutoff or _import_cutoff(item)` (`_import_cutoff` is the
+existing `item.import_cutoff or item.created_at.date()` from `changes/016`).
+
+**Stamping:** `_upsert_account` sets `account.import_cutoff = date.today()`
+**only when it creates the row for an Item that has synced before**
+(`is_new and item.last_synced_at is not None`). Never on update. Never during
+an Item's first-ever sync — those accounts keep `NULL`, so the
+"connect, then sync days later" path stays retry-safe and byte-for-byte
+identical to pre-`changes/023` behaviour.
+
+**Gating:** both the `added` and the `modified` loop resolve
+`_account_for(txn["account_id"])` **first**; if it returns `None` (the
+`account_id` is absent from the page's `accounts` array and from the DB), the
+entry is skipped — no import, no counter increment, not an error.
+`_should_import` / `_within_import_window` take the resolved `Account` and
+gate on `_account_import_cutoff(account, item)` instead of the Item cutoff.
+
+**Starting Balance:** `_add_starting_balance` dates the synthetic opening row
+at `_account_import_cutoff(account, item)` — today's date for a
+newly-added account, the Item cutoff (via the `NULL` fallback) for a
+first-link account.
+
+**Cursor is unchanged** — still Item-scoped (`context/plaid-integration.md`).
+Only the import cutoff becomes per-account.
+
+**Cases** (all offline — mocked `transactions_sync`, real DB, seeded
+`PlaidItem` + `Account`, same harness as the `changes/008`+ offline tests;
+`_mock_sync_response` gains an `accounts` argument so a page can introduce a
+new account):
+
+1. **New account on an already-synced Item gets today's cutoff.** Seed a
+   `PlaidItem` with `last_synced_at` set and `import_cutoff` 60 days ago, plus
+   one existing `Account` A. Mock one page whose `accounts` array is
+   `[A, B]` (B new) and whose `added` array has one txn on B dated 30 days
+   ago and one dated today. **Then:** `Account` B is created with
+   `import_cutoff == date.today()`; the 30-days-ago txn on B is **not**
+   imported; the today txn on B **is** imported; B gets a `"Starting Balance"`
+   row dated `date.today()`; account A is untouched (its `import_cutoff` stays
+   `NULL`).
+2. **Pre-today history for the new account is skipped in bulk.** Same setup as
+   case 1 but B's `added` array has 5 txns spanning 90 days ago → today.
+   **Then:** only the txns dated `>= date.today()` are imported;
+   `transactions_added` for that item counts exactly those; no error.
+3. **First-ever sync still imports from the Item cutoff (`NULL` account
+   cutoff).** Seed a `PlaidItem` with `last_synced_at IS None` and
+   `import_cutoff` 7 days ago. Mock one page: `accounts` `[C]`, `added` = one
+   txn on C dated 3 days ago (after the Item cutoff) and one dated 14 days ago
+   (before it). **Then:** `Account` C is created with `import_cutoff IS NULL`;
+   the 3-days-ago txn is imported, the 14-days-ago txn is skipped (the Item
+   cutoff still governs, via the `NULL` fallback); C's `"Starting Balance"`
+   row is dated at the Item cutoff (7 days ago), not today. Identical to
+   pre-`changes/023` behaviour.
+4. **Existing `NULL`-cutoff account keeps Item-cutoff behaviour on a later
+   sync.** Seed a `PlaidItem` with `last_synced_at` set and `import_cutoff` 30
+   days ago, plus an existing `Account` D with `import_cutoff IS NULL` (synced
+   before this change). Mock a page: `accounts` `[D]`, `added` = one txn on D
+   dated 20 days ago and one dated 40 days ago. **Then:** the 20-days-ago txn
+   is imported, the 40-days-ago txn is skipped (Item cutoff via the `NULL`
+   fallback); D's `import_cutoff` stays `NULL` (not stamped on update).
+5. **`added` entry for an unknown `account_id` is skipped, not an error.**
+   Mock a page: `accounts` `[E]`, `added` = one txn whose `account_id` is
+   neither in that `accounts` array nor in the DB. **Then:** the sync
+   returns `200`; that entry is not imported and not counted; no exception is
+   raised (documents `_account_for → None → continue`).
+
+No migration beyond the one nullable `Date` column. The existing
+`changes/011` import-cutoff cases and `changes/015` skip-pending cases must
+still pass unchanged — same accounts, same effective cutoff via the `NULL`
+fallback; the `_should_import` signature change is internal.
+
 ## Tests
 - `tests/test_plaid_sync.py` § `"test_sync_without_token_returns_401"` —
   covers § error case: no access token.
@@ -268,6 +354,9 @@ with.
   `description_similarity` helper: case/punctuation normalization, the
   ratio being `difflib` on the normalized text, and pairs either side of
   the `0.80` line.
+- `changes/023` — § Per-account import cutoff: no test exists yet —
+  test-writer will produce the 5 cases (`tests/test_plaid_sync.py`, all
+  offline) when this slice is built.
 
 All 14 confirmed red before implementation — the 8 sync cases failed
 `transactions_linked == 1` (`0 == 1`, adoption not implemented); the 6
@@ -495,3 +584,14 @@ server-side logging of the swallowed exception in `sync()`.
   `tests/test_plaid_sync.py` +8, `tests/test_api_helpers.py` (new) +6.
   Full suite 259 passed / 6 skipped. See § Manual-transaction adoption and
   `changes/022-link-manual-on-sync/plan.md`.
+- 023 (2026-08-28) — contract landed by test-planning. New
+  `Account.import_cutoff` (Date, nullable, no backfill) + an effective
+  per-account cutoff (`account.import_cutoff or _import_cutoff(item)`).
+  `_upsert_account` stamps `date.today()` only on a genuinely-new account of
+  an already-synced Item (`is_new and item.last_synced_at is not None`); both
+  sync loops resolve `_account_for` first and skip an entry whose account is
+  unknown; `_should_import` and `_add_starting_balance` move to the
+  per-account cutoff. Lets a user add accounts at an already-linked bank
+  (`spec/plaid-connect.md` § update-link-token) and have them track from the
+  add-date, not the Item's original connect date. See § Per-account import
+  cutoff and `changes/023-add-accounts-update-mode/plan.md`. Not yet built.
