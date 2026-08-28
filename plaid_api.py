@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import plaid
@@ -15,7 +15,12 @@ from plaid.model.products import Products
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
 from sqlalchemy.exc import IntegrityError
 
-from api_helpers import current_user_id, infer_category_id
+from api_helpers import (
+    DESCRIPTION_MATCH_THRESHOLD,
+    current_user_id,
+    description_similarity,
+    infer_category_id,
+)
 from models import Account, Category, PlaidItem, Transaction, User, db
 
 plaid_bp = Blueprint("plaid_api", __name__, url_prefix="/api/plaid")
@@ -378,30 +383,92 @@ def _is_transfer(plaid_transaction):
     return pfc.get("primary") in _TRANSFER_PRIMARY_CATEGORIES
 
 
+def _plaid_posted_date(plaid_transaction):
+    """Plaid's SDK returns `date` as a native `datetime.date`; raw JSON and
+    test fixtures use an ISO string. Normalize to `date`."""
+    posted = plaid_transaction["date"]
+    return date.fromisoformat(posted) if isinstance(posted, str) else posted
+
+
+# spec/plaid-sync.md § Manual-transaction adoption — how far a hand-entered
+# row's date may sit from the bank's posted date and still be the same
+# transaction.
+_MANUAL_MATCH_WINDOW = timedelta(days=7)
+
+
+def _adopt_manual_transaction(account, plaid_transaction):
+    """spec/plaid-sync.md § Manual-transaction adoption. Find the row the
+    user typed in by hand before this transaction posted — same account, no
+    `plaid_transaction_id` yet, exact amount (this app's sign), posted date
+    within a week, and a strict (`DESCRIPTION_MATCH_THRESHOLD`) description
+    match. The synthetic "Starting Balance" row is never a candidate. When
+    several qualify, the nearest date wins (then the strongest description
+    match, then the lowest id). Returns the row to adopt, or None."""
+    posted = _plaid_posted_date(plaid_transaction)
+    amount = -Decimal(str(plaid_transaction["amount"]))
+
+    candidates = (
+        Transaction.query.filter_by(account_id=account.id, plaid_transaction_id=None)
+        .filter(Transaction.amount == amount, Transaction.description != "Starting Balance")
+        .all()
+    )
+
+    scored = []
+    for row in candidates:
+        distance = abs((row.posted_at - posted).days)
+        if distance > _MANUAL_MATCH_WINDOW.days:
+            continue
+        similarity = description_similarity(row.description, plaid_transaction["name"])
+        if similarity < DESCRIPTION_MATCH_THRESHOLD:
+            continue
+        # id is unique, so the first three keys already order every pair —
+        # nearest date, then strongest match (negated for ascending sort).
+        scored.append((distance, -similarity, row.id, row))
+
+    return min(scored)[-1] if scored else None
+
+
 def _upsert_transaction(account, plaid_transaction, category_cache=None):
     """Plaid-owned fields only — never touches category_id on an *existing*
     row, so a user's categorization survives any future upsert. Plaid's
     amount sign convention is the OPPOSITE of this app's (positive = outflow
     for Plaid; positive = inflow here) — see spec/plaid-sync.md's Notes.
     Negate on every write. A brand-new row with no category is auto-filled
-    from a prior same-merchant choice (infer_category_id)."""
+    from a prior same-merchant choice (infer_category_id).
+
+    A first-time incoming transaction first tries to *adopt* a matching
+    hand-entered row instead of inserting a duplicate (see
+    _adopt_manual_transaction). Returns "linked" when it adopted one,
+    otherwise None."""
     transaction = Transaction.query.filter_by(
         account_id=account.id, plaid_transaction_id=plaid_transaction["transaction_id"]
     ).first()
     is_new = transaction is None
+    adopted = False
     if is_new:
-        transaction = Transaction(account_id=account.id, plaid_transaction_id=plaid_transaction["transaction_id"])
-        db.session.add(transaction)
+        transaction = _adopt_manual_transaction(account, plaid_transaction)
+        if transaction is not None:
+            adopted = True
+            transaction.plaid_transaction_id = plaid_transaction["transaction_id"]
+        else:
+            transaction = Transaction(
+                account_id=account.id, plaid_transaction_id=plaid_transaction["transaction_id"]
+            )
+            db.session.add(transaction)
     transaction.amount = -Decimal(str(plaid_transaction["amount"]))
     transaction.description = plaid_transaction["name"]
     transaction.posted_at = plaid_transaction["date"]
     transaction.pending = plaid_transaction["pending"]
     transaction.transfer = _is_transfer(plaid_transaction)
 
-    if is_new and transaction.category_id is None and not transaction.is_income:
+    # An adopted row already carries the user's own category / is_income
+    # choice — leave it. Only a genuinely new row gets auto-categorized.
+    if is_new and not adopted and transaction.category_id is None and not transaction.is_income:
         inferred = infer_category_id(account.user_id, transaction.description, category_cache)
         if inferred is not None:
             transaction.category_id = inferred
+
+    return "linked" if adopted else None
 
 
 def _delete_removed_transaction(account, removed_entry):
@@ -427,6 +494,11 @@ _EMPTY_COUNTERS = {
     "transactions_added": 0,
     "transactions_modified": 0,
     "transactions_removed": 0,
+    # changes/022 — an incoming transaction merged into a pre-existing manual
+    # row instead of inserted as a new one (see _adopt_manual_transaction).
+    # Lives alongside the others so the per-item result, totals, and the
+    # mutation-during-pagination reset all carry it for free.
+    "transactions_linked": 0,
 }
 
 
@@ -444,10 +516,7 @@ def _within_import_window(plaid_transaction, item):
     transactions dated on/after the item's import cutoff are imported.
     Applies to `added` and `modified`; `removed` is naturally a no-op for
     anything never imported."""
-    posted = plaid_transaction["date"]
-    if isinstance(posted, str):
-        posted = date.fromisoformat(posted)
-    return posted >= _import_cutoff(item)
+    return _plaid_posted_date(plaid_transaction) >= _import_cutoff(item)
 
 
 def _should_import(plaid_transaction, item):
@@ -521,14 +590,18 @@ def _sync_one_item(user, item):
         for plaid_transaction in response["added"]:
             if not _should_import(plaid_transaction, item):
                 continue
-            _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache)
-            counters["transactions_added"] += 1
+            outcome = _upsert_transaction(
+                _account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache
+            )
+            counters["transactions_linked" if outcome == "linked" else "transactions_added"] += 1
 
         for plaid_transaction in response["modified"]:
             if not _should_import(plaid_transaction, item):
                 continue
-            _upsert_transaction(_account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache)
-            counters["transactions_modified"] += 1
+            outcome = _upsert_transaction(
+                _account_for(plaid_transaction["account_id"]), plaid_transaction, category_cache
+            )
+            counters["transactions_linked" if outcome == "linked" else "transactions_modified"] += 1
 
         for removed_entry in response["removed"]:
             account = _account_for(removed_entry["account_id"])

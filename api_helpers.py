@@ -1,8 +1,34 @@
+import re
 from datetime import date
+from difflib import SequenceMatcher
 
 from flask_jwt_extended import get_jwt_identity
 
 from models import Account, Category, Transaction, db
+
+# spec/plaid-sync.md § Manual-transaction adoption. A synced transaction
+# adopts a pre-entered manual row only when their descriptions score at
+# least this on `description_similarity`. Deliberately strict: it will miss
+# a match whenever the typed text differs a lot from the bank's merchant
+# string (accepted, in exchange for near-zero false positives).
+DESCRIPTION_MATCH_THRESHOLD = 0.80
+
+_NON_ALNUM_RUN = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_description(text):
+    """Lower-case, then collapse every run of non-alphanumeric characters to
+    a single space, trimmed — e.g. "Whole Foods Mkt — 5th Ave!" becomes
+    "whole foods mkt 5th ave"."""
+    return _NON_ALNUM_RUN.sub(" ", (text or "").lower()).strip()
+
+
+def description_similarity(a, b):
+    """Ratio in [0, 1] of how alike two transaction descriptions are, after
+    normalization — `difflib.SequenceMatcher` on the normalized strings, no
+    substring shortcut. Used by Plaid sync to decide whether an incoming
+    transaction is one the user already entered by hand."""
+    return SequenceMatcher(None, _normalize_description(a), _normalize_description(b)).ratio()
 
 
 def current_user_id():

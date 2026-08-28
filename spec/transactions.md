@@ -54,9 +54,12 @@ category, if one is given).
 "<decimal>", "description": "<text>", "category_id": <id>?}`.
 **Expected output:** `201`, the created transaction in the same shape as a
 `GET /api/transactions` row. `is_income` is always `false` on creation;
-`plaid_transaction_id` stays `null` (this is a manual entry, not a Plaid
-import). Sign follows the app convention — negative = spending, positive =
-inflow. **When `category_id` is omitted (changes/013), it is auto-filled
+`plaid_transaction_id` is `null` on creation — but no longer permanently:
+a later `/transactions/sync` can **adopt** this row when the bank posts the
+matching transaction, stamping `plaid_transaction_id` in place rather than
+inserting a duplicate (see `spec/plaid-sync.md` § Manual-transaction
+adoption, `changes/022`). Sign follows the app convention — negative =
+spending, positive = inflow. **When `category_id` is omitted (changes/013), it is auto-filled
 from the category on the user's most recent transaction with the exact
 same `description` — an explicit `category_id` in the body always wins.**
 **Side effects:** One `Transaction` row created under the given account.
@@ -89,6 +92,7 @@ still has it and changes it, you probably want it back).
 ## Notes
 - Reuses the same 404-for-nonexistent / 403-for-wrong-owner IDOR pattern as `budget-api.md`'s `_get_owned_category`, extended to also cover transaction ownership (via a join through `Account`, not a direct column — `Transaction` has no `user_id` of its own).
 - No transaction *creation* endpoint in the 002/005 slices — transactions came only from `seed_demo.py` or Plaid sync. **changes/011 adds manual `POST` and `DELETE`** (see the contract sections above).
+- **changes/022:** a manually created row is no longer guaranteed to keep `plaid_transaction_id == null` for its whole life. Plaid sync will link it to the real transaction once that posts (same account, exact amount, `posted_at` within 7 days, strict description match) — the contract for that lives in `spec/plaid-sync.md`, not here. Nothing about `POST`/`DELETE`/`PATCH` behavior changes.
 - `pending` (boolean, already on the model — SimpleFIN's pending-transaction flag) is returned as-is; no special handling needed yet, but worth surfacing to the frontend now so `simplefin-sync.md` doesn't need a follow-up API change later.
 - **`is_income` (005):** new `Transaction.is_income` boolean, default `false`. Deliberately a flag on the existing model, not an auto-created "To Be Budgeted" `Category` row — keeps the category table free of synthetic entries and reuses this same PATCH endpoint/dropdown rather than adding a new relationship type. Mutual exclusivity with `category_id` is enforced server-side on every write (see § PATCH error cases), so no query anywhere needs to defensively check both.
 - **No per-transaction backfill; one-time starting-balance reconciliation instead (005, decided 2026-08-26):** existing transactions keep `is_income=false`. Separately, a one-off script (run once at ship time, not part of any API endpoint) creates exactly one synthetic `Transaction` per `Account` — `is_income: true`, `amount` = the account's current `balance`, `description: "Starting Balance"`, `category_id: null` — so `ready_to_assign` reflects money already in the bank without importing transaction history. See `changes/005-budget-targets-and-tbb/plan.md`'s Constraints. **changes/012 makes this automatic:** the first time `/transactions/sync` sees a Plaid account it doesn't have locally, it creates exactly that synthetic `Transaction` (`is_income: true`, `amount` = the account's `balance`, `description: "Starting Balance"`, dated at the connection's import cutoff), so `ready_to_assign` picks up money already in the bank even though the import cutoff means no pre-connection history is pulled. Only on account *creation* — re-syncing never adds a second one — and skipped for a zero balance. See `spec/plaid-sync.md`.
@@ -157,3 +161,8 @@ still has it and changes it, you probably want it back).
   `POST /api/transactions` with such a `category_id` → `400`.
   Auto-categorization skips them too. See `spec/budget-api.md`.
   `tests/test_transactions.py` +2.
+- 022 (2026-08-28) — doc only: a manually added row's `plaid_transaction_id`
+  is no longer permanently `null` — Plaid sync can adopt the row when the
+  real transaction posts. Behavior + contract live in `spec/plaid-sync.md`
+  § Manual-transaction adoption; no endpoint behavior changes here, no new
+  test in `tests/test_transactions.py`.

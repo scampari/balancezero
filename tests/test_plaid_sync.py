@@ -786,3 +786,333 @@ def test_sync_imports_the_transaction_once_it_settles(client, test_user, auth_he
     row = Transaction.query.filter_by(account_id=account.id).one()
     assert row.description == "COFFEE"
     assert row.pending is False
+
+
+# ---------------------------------------------------------------------------
+# manual-transaction adoption on sync (changes/022)
+#
+# A user can enter a transaction by hand before the bank posts it. When the
+# posted transaction arrives, sync adopts the pre-entered manual row in
+# place (stamping plaid_transaction_id, overwriting the Plaid-owned fields)
+# instead of inserting a duplicate. spec/plaid-sync.md § Manual-transaction
+# adoption. Offline — mocked transactions_sync, real DB.
+#
+# Note (test-writer): cases 2/3/4/6 in the spec are negative filters whose
+# outcome (a new row, no link) is *also* the pre-feature behavior, so on
+# their own they could not be red. Each is written here with a legitimate
+# control row that IS meant to be adopted plus an adversarial decoy that a
+# naive implementation (skipping that one filter) would wrongly pick — so
+# the test both fails today and pins the filter's meaning. Case 7 is folded
+# into the re-sync half of the first test and into test 7's dual delivery.
+# ---------------------------------------------------------------------------
+
+_ADOPT_ACCOUNT_PLAID_ID = "acc-adopt"
+
+
+def _seed_item_and_account(user):
+    item = _seed_item(user, "item-adopt")
+    account = Account(
+        user_id=user.id,
+        name="Checking",
+        plaid_account_id=_ADOPT_ACCOUNT_PLAID_ID,
+        plaid_item_id=item.id,
+    )
+    db.session.add(account)
+    db.session.commit()
+    return item, account
+
+
+def _seed_manual_txn(account, amount, posted_at, description, category_id=None, is_income=False):
+    """A hand-entered Transaction — the state POST /api/transactions leaves
+    behind: no plaid_transaction_id."""
+    txn = Transaction(
+        account_id=account.id,
+        plaid_transaction_id=None,
+        posted_at=posted_at,
+        amount=Decimal(str(amount)),
+        description=description,
+        category_id=category_id,
+        is_income=is_income,
+    )
+    db.session.add(txn)
+    db.session.commit()
+    return txn
+
+
+def _added(transaction_id, amount, iso_date, name, pending=False):
+    return {
+        "transaction_id": transaction_id,
+        "account_id": _ADOPT_ACCOUNT_PLAID_ID,
+        "amount": amount,
+        "date": iso_date,
+        "name": name,
+        "pending": pending,
+    }
+
+
+def test_sync_adopts_a_matching_manual_row_and_is_idempotent_on_resync(
+    client, test_user, auth_headers, monkeypatch
+):
+    # Arrange — a transaction the user typed in 3 days before it posted,
+    # already filed to a category.
+    item, account = _seed_item_and_account(test_user)
+    category = client.post("/api/categories", json={"name": "Coffee"}, headers=auth_headers).get_json()
+    manual = _seed_manual_txn(
+        account, "-12.00", "2026-08-17", "BLUE BOTTLE COFFEE 0123", category_id=category["id"]
+    )
+    manual_id = manual.id
+    posted = _added("plaid-1", 12.0, "2026-08-20", "SQ *BLUE BOTTLE COFFEE 0123")
+
+    class _PostsThenResyncs:
+        def __init__(self):
+            self.calls = 0
+
+        def transactions_sync(self, *_a, **_k):
+            self.calls += 1
+            if self.calls == 1:
+                return _mock_sync_response(added=[posted])
+            return _mock_sync_response(modified=[posted])  # re-delivered once linked
+
+    _patch_client(monkeypatch, _PostsThenResyncs())
+
+    # Act — first sync
+    first = client.post("/api/plaid/sync", headers=auth_headers)
+
+    # Assert — the manual row was adopted, no second row inserted
+    assert first.status_code == 200
+    body = first.get_json()
+    assert body["items"][0]["transactions_linked"] == 1
+    assert body["items"][0]["transactions_added"] == 0
+    assert body["totals"]["transactions_linked"] == 1
+    assert Transaction.query.filter_by(account_id=account.id).count() == 1
+
+    db.session.refresh(manual)
+    assert manual.plaid_transaction_id == "plaid-1"
+    assert manual.category_id == category["id"]          # user's filing survives
+    assert manual.amount == Decimal("-12.00")
+    assert manual.description == "SQ *BLUE BOTTLE COFFEE 0123"  # Plaid field applied
+    assert manual.posted_at == date(2026, 8, 20)
+    assert manual.pending is False
+    assert manual.transfer is False
+
+    # Act — second sync re-delivers the same transaction as `modified`
+    second = client.post("/api/plaid/sync", headers=auth_headers)
+
+    # Assert — normal modified path, no re-link, no duplicate
+    assert second.get_json()["items"][0]["transactions_linked"] == 0
+    assert Transaction.query.filter_by(account_id=account.id).count() == 1
+    db.session.refresh(manual)
+    assert manual.id == manual_id
+    assert manual.category_id == category["id"]
+
+
+def test_sync_requires_an_exact_amount_match_to_adopt(client, test_user, auth_headers, monkeypatch):
+    # Arrange — decoy is a cent off but lands exactly on the posted date
+    # (closer); the real row matches the amount two days out. Amount is a
+    # hard filter, so the cent-off row is never adopted.
+    item, account = _seed_item_and_account(test_user)
+    good = _seed_manual_txn(account, "-12.00", "2026-08-18", "BLUE BOTTLE COFFEE 0123")
+    decoy = _seed_manual_txn(account, "-12.01", "2026-08-20", "BLUE BOTTLE COFFEE 0123")
+
+    class _Posts:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[_added("plaid-1", 12.0, "2026-08-20", "SQ *BLUE BOTTLE COFFEE 0123")]
+            )
+
+    _patch_client(monkeypatch, _Posts())
+
+    # Act
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+
+    # Assert
+    assert response.get_json()["items"][0]["transactions_linked"] == 1
+    assert Transaction.query.filter_by(account_id=account.id).count() == 2
+    db.session.refresh(good)
+    db.session.refresh(decoy)
+    assert good.plaid_transaction_id == "plaid-1"
+    assert decoy.plaid_transaction_id is None
+
+
+def test_sync_only_adopts_within_a_seven_day_window(client, test_user, auth_headers, monkeypatch):
+    # Arrange — decoy's description is a perfect match but it is 10 days from
+    # the posted date; the real row is a weaker (still >= 0.80) match one day
+    # out. The window excludes the decoy regardless of its better text.
+    item, account = _seed_item_and_account(test_user)
+    good = _seed_manual_txn(account, "-30.00", "2026-08-19", "BLUE BOTTLE COFFEE 0123")
+    decoy = _seed_manual_txn(account, "-30.00", "2026-08-30", "SQ *BLUE BOTTLE COFFEE 0123")
+
+    class _Posts:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[_added("plaid-1", 30.0, "2026-08-20", "SQ *BLUE BOTTLE COFFEE 0123")]
+            )
+
+    _patch_client(monkeypatch, _Posts())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+
+    assert response.get_json()["items"][0]["transactions_linked"] == 1
+    assert Transaction.query.filter_by(account_id=account.id).count() == 2
+    db.session.refresh(good)
+    db.session.refresh(decoy)
+    assert good.plaid_transaction_id == "plaid-1"   # 1 day out — adopted
+    assert decoy.plaid_transaction_id is None       # 10 days out — excluded
+
+
+def test_sync_requires_description_similarity_to_adopt(client, test_user, auth_headers, monkeypatch):
+    # Arrange — decoy matches on amount and lands exactly on the posted date,
+    # but its description is unrelated (< 0.80). The real row is two days out
+    # with a strong description match.
+    item, account = _seed_item_and_account(test_user)
+    good = _seed_manual_txn(account, "-45.00", "2026-08-18", "BLUE BOTTLE COFFEE 0123")
+    decoy = _seed_manual_txn(account, "-45.00", "2026-08-20", "Monthly Rent")
+
+    class _Posts:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[_added("plaid-1", 45.0, "2026-08-20", "SQ *BLUE BOTTLE COFFEE 0123")]
+            )
+
+    _patch_client(monkeypatch, _Posts())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+
+    assert response.get_json()["items"][0]["transactions_linked"] == 1
+    assert Transaction.query.filter_by(account_id=account.id).count() == 2
+    db.session.refresh(good)
+    db.session.refresh(decoy)
+    assert good.plaid_transaction_id == "plaid-1"
+    assert decoy.plaid_transaction_id is None
+
+
+def test_sync_adopts_the_closest_candidate_when_several_qualify(
+    client, test_user, auth_headers, monkeypatch
+):
+    # Arrange — two rows that both satisfy the rule, 1 day vs 5 days from the
+    # posted date. Only the nearer one is adopted.
+    item, account = _seed_item_and_account(test_user)
+    near = _seed_manual_txn(account, "-20.00", "2026-08-19", "BLUE BOTTLE COFFEE 0123")
+    far = _seed_manual_txn(account, "-20.00", "2026-08-15", "BLUE BOTTLE COFFEE 0123")
+    near_id, far_id = near.id, far.id
+
+    class _Posts:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[_added("plaid-1", 20.0, "2026-08-20", "SQ *BLUE BOTTLE COFFEE 0123")]
+            )
+
+    _patch_client(monkeypatch, _Posts())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+
+    assert response.get_json()["items"][0]["transactions_linked"] == 1
+    assert Transaction.query.filter_by(account_id=account.id).count() == 2
+    assert db.session.get(Transaction, near_id).plaid_transaction_id == "plaid-1"
+    assert db.session.get(Transaction, far_id).plaid_transaction_id is None
+
+
+def test_sync_never_adopts_the_synthetic_starting_balance_row(
+    client, test_user, auth_headers, monkeypatch
+):
+    # Arrange — the reserved "Starting Balance" row is a perfect match on
+    # amount and date; a non-reserved lookalike ("Starting Balances") one day
+    # out is the only legitimate candidate.
+    item, account = _seed_item_and_account(test_user)
+    sentinel = _seed_manual_txn(account, "-500.00", "2026-08-20", "Starting Balance")
+    lookalike = _seed_manual_txn(account, "-500.00", "2026-08-19", "Starting Balances")
+
+    class _Posts:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                added=[_added("plaid-1", 500.0, "2026-08-20", "Starting Balance")]
+            )
+
+    _patch_client(monkeypatch, _Posts())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+
+    assert response.get_json()["items"][0]["transactions_linked"] == 1
+    assert Transaction.query.filter_by(account_id=account.id).count() == 2
+    db.session.refresh(sentinel)
+    db.session.refresh(lookalike)
+    assert sentinel.plaid_transaction_id is None            # reserved — never a candidate
+    assert lookalike.plaid_transaction_id == "plaid-1"
+
+
+def test_sync_keeps_an_already_linked_row_on_the_normal_modified_path(
+    client, test_user, auth_headers, monkeypatch
+):
+    # Arrange — one already-synced row filed to a category, one hand-entered
+    # row still waiting for its bank record. A single sync delivers a
+    # `modified` for the first and a matching `added` for the second.
+    item, account = _seed_item_and_account(test_user)
+    category = client.post("/api/categories", json={"name": "Dining"}, headers=auth_headers).get_json()
+    already = Transaction(
+        account_id=account.id,
+        plaid_transaction_id="plaid-existing",
+        posted_at="2026-08-01",
+        amount=Decimal("-20.00"),
+        description="CHIPOTLE",
+        category_id=category["id"],
+    )
+    db.session.add(already)
+    db.session.commit()
+    already_id = already.id
+    manual = _seed_manual_txn(account, "-9.00", "2026-08-18", "BLUE BOTTLE COFFEE 0123")
+
+    class _Posts:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(
+                modified=[_added("plaid-existing", 25.0, "2026-08-01", "CHIPOTLE")],
+                added=[_added("plaid-new", 9.0, "2026-08-20", "SQ *BLUE BOTTLE COFFEE 0123")],
+            )
+
+    _patch_client(monkeypatch, _Posts())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+    result = response.get_json()["items"][0]
+
+    # The already-linked row: normal modified upsert, NOT counted as linked
+    assert result["transactions_modified"] == 1
+    assert result["transactions_linked"] == 1  # the manual row, adopted by `plaid-new`
+    kept = db.session.get(Transaction, already_id)
+    assert kept.amount == Decimal("-25.00")
+    assert kept.category_id == category["id"]
+
+    # The manual row was adopted, no duplicate inserted
+    assert Transaction.query.filter_by(account_id=account.id).count() == 2
+    db.session.refresh(manual)
+    assert manual.plaid_transaction_id == "plaid-new"
+
+
+def test_sync_preserves_is_income_when_adopting_a_manual_row(
+    client, test_user, auth_headers, monkeypatch
+):
+    # Arrange — a paycheck entered by hand before it lands: marked income, no
+    # category (the two are mutually exclusive).
+    item, account = _seed_item_and_account(test_user)
+    manual = _seed_manual_txn(
+        account, "2500.00", "2026-08-18", "ACME PAYROLL DIRECT DEP", is_income=True
+    )
+    manual_id = manual.id
+
+    class _Posts:
+        def transactions_sync(self, *_a, **_k):
+            # Plaid inflow: negative in Plaid's convention -> +2500 here
+            return _mock_sync_response(
+                added=[_added("plaid-1", -2500.0, "2026-08-20", "ACME PAYROLL DIRECT DEP")]
+            )
+
+    _patch_client(monkeypatch, _Posts())
+
+    response = client.post("/api/plaid/sync", headers=auth_headers)
+
+    assert response.get_json()["items"][0]["transactions_linked"] == 1
+    assert Transaction.query.filter_by(account_id=account.id).count() == 1
+    db.session.refresh(manual)
+    assert manual.id == manual_id
+    assert manual.plaid_transaction_id == "plaid-1"
+    assert manual.is_income is True
+    assert manual.category_id is None
+    assert manual.amount == Decimal("2500.00")
