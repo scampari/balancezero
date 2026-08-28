@@ -111,7 +111,19 @@ class Category(db.Model):
     # GET /api/budget's active list (returned separately as archived_categories)
     # and from the totals. Enforced in budget_api.py, not at the DB layer.
     archived = db.Column(db.Boolean, nullable=False, default=False)
+    # Set only on an auto-created credit-card payment category (changes/021):
+    # the card whose balance this envelope pays down. Unique — one payment
+    # category per card. ON DELETE SET NULL so removing the account leaves the
+    # (now inert) category and its allocation history intact, mirroring
+    # Account.plaid_item_id. `is_payment_category` is derived, not stored.
+    payment_account_id = db.Column(
+        db.Integer, db.ForeignKey("account.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    @property
+    def is_payment_category(self):
+        return self.payment_account_id is not None
 
     subcategories = db.relationship("Category", backref=db.backref("parent", remote_side=[id]))
 

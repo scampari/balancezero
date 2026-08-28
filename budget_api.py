@@ -188,6 +188,11 @@ def update_category(category_id):
     if not recognized & data.keys():
         return jsonify({"error": "provide at least one of name, parent_id, archived, position"}), 400
 
+    # An auto-created credit-card payment category is managed by its card
+    # binding — only reordering is allowed (changes/021).
+    if category.payment_account_id is not None and (data.keys() - {"position"}):
+        return jsonify({"error": "a credit-card payment category can't be renamed, moved, or archived"}), 400
+
     user_id = _current_user_id()
     has_children = Category.query.filter_by(parent_id=category.id).first() is not None
     old_parent_id = category.parent_id
@@ -425,12 +430,86 @@ def get_budget():
             "available": allocated_total + spent_total,
         }
 
+    # --- YNAB-style credit-card budgeting (changes/021) -------------------
+    # Each auto-created payment category is bound to a card. Its "available"
+    # is the cash set aside to pay that card down:
+    #   available(P) = Σ(allocations to P)                 [already in own]
+    #                + moved_in(P)   spending on the card, from a real envelope
+    #                - cc_payments(P)  money paid onto the card
+    #                + cc_opening(P)   the card's negative opening balance
+    # The card *purchase* still counts as spend in its own spending category
+    # (unchanged) — we do NOT also subtract it here. The two net out in
+    # totals.available: an envelope goes down, the payment envelope goes up.
+    account_by_payment_cat = {c.id: c.payment_account_id for c in categories if c.payment_account_id}
+    payment_cat_ids = set(account_by_payment_cat)
+    card_totals = {}  # payment_cat_id -> display extras
+    if account_by_payment_cat:
+        card_ids = set(account_by_payment_cat.values())
+        # Sum the three components per card account in one pass each.
+        def _by_card(*clauses):
+            rows = (
+                db.session.query(Transaction.account_id, db.func.sum(Transaction.amount))
+                .filter(Transaction.account_id.in_(card_ids), *clauses)
+                .group_by(Transaction.account_id)
+                .all()
+            )
+            return {account_id: total or Decimal("0") for account_id, total in rows}
+
+        normal_card_spend = _by_card(
+            Transaction.amount < 0,
+            Transaction.transfer.is_(False),
+            Transaction.category_id.isnot(None),
+            Transaction.category_id.notin_(payment_cat_ids),
+        )
+        card_payments = _by_card(Transaction.transfer.is_(True), Transaction.amount > 0)
+        card_opening = _by_card(
+            Transaction.description == "Starting Balance",
+            Transaction.plaid_transaction_id.is_(None),
+        )
+
+        def _month_by_card(*clauses):
+            rows = (
+                db.session.query(Transaction.account_id, db.func.sum(Transaction.amount))
+                .filter(
+                    Transaction.account_id.in_(card_ids),
+                    Transaction.posted_at >= start,
+                    Transaction.posted_at < end,
+                    *clauses,
+                )
+                .group_by(Transaction.account_id)
+                .all()
+            )
+            return {account_id: total or Decimal("0") for account_id, total in rows}
+
+        month_spend = _month_by_card(Transaction.amount < 0, Transaction.transfer.is_(False))
+        month_payments = _month_by_card(Transaction.transfer.is_(True), Transaction.amount > 0)
+        card_balance = {
+            a.id: a.balance
+            for a in Account.query.filter(Account.id.in_(card_ids)).all()
+        }
+
+        for pcat_id, account_id in account_by_payment_cat.items():
+            moved_in = -normal_card_spend.get(account_id, Decimal("0"))  # outflows are negative
+            payments = card_payments.get(account_id, Decimal("0"))
+            opening = card_opening.get(account_id, Decimal("0"))
+            adj = moved_in - payments + opening
+            # Fold BEFORE the group roll-up so the "Credit Card Payments"
+            # group totals its children correctly with no extra code.
+            own[pcat_id]["available"] += adj
+            own[pcat_id]["spent_this_month"] = Decimal("0")
+            card_totals[pcat_id] = {
+                "card_spending_this_month": str(-month_spend.get(account_id, Decimal("0"))),
+                "card_payments_this_month": str(month_payments.get(account_id, Decimal("0"))),
+                "card_balance": str(card_balance.get(account_id, Decimal("0"))),
+            }
+
     active = []
     archived = []
     totals = {"budgeted": Decimal("0"), "spent": Decimal("0"), "available": Decimal("0")}
     for cat in categories:
         o = own[cat.id]
         is_group = cat.parent_id is None and cat.id in group_parent_ids
+        is_payment = cat.id in payment_cat_ids
 
         if is_group:
             child_ids = child_ids_by_parent.get(cat.id, [])
@@ -439,6 +518,9 @@ def get_budget():
                 for key in ("allocated_this_month", "spent_this_month", "available")
             }
             target = None  # a group can't be allocated to, so a target is meaningless
+        elif is_payment:
+            disp = o  # already carries the folded card adjustment
+            target = None  # a payment envelope's progress is card-driven, not a target
         else:
             disp = o
             active_target = CategoryTarget.query.filter_by(category_id=cat.id, superseded_at=None).first()
@@ -455,19 +537,26 @@ def get_budget():
             "position": cat.position,
             "archived": cat.archived,
             "is_group": is_group,
+            "is_payment_category": is_payment,
+            "payment_account_id": cat.payment_account_id,
             "allocated_this_month": str(disp["allocated_this_month"]),
             "spent_this_month": str(disp["spent_this_month"]),
             "available": str(disp["available"]),
             "target": target,
         }
+        if is_payment:
+            entry.update(card_totals[cat.id])
         if cat.archived:
             archived.append(entry)
         else:
             active.append(entry)
             # Totals sum each category's OWN values — a group and its children
-            # aren't double-counted.
+            # aren't double-counted. A payment envelope's "spend" is the
+            # card's activity, already counted in the real spending category —
+            # keep it out of totals.spent, but its available/budgeted count.
             totals["budgeted"] += o["allocated_this_month"]
-            totals["spent"] += o["spent_this_month"]
+            if not is_payment:
+                totals["spent"] += o["spent_this_month"]
             totals["available"] += o["available"]
 
     archived.sort(key=lambda e: e["name"].lower())

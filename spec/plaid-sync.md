@@ -317,3 +317,12 @@ server-side logging of the swallowed exception in `sync()`.
   payment). Missing/blank category → false. Feeds the budget-math
   exclusion in `spec/budget-api.md`. Migration `ca283921af94`.
   `tests/test_plaid_sync.py` +1.
+- 021 (2026-08-27) — auto-created credit-card payment category. When
+  `_upsert_account` handles an `account.type == "credit"` account it calls
+  `_ensure_payment_category(user, account)`: finds/creates a top-level
+  `"Credit Card Payments"` group and a child `Category` bound to the card
+  via `payment_account_id`. Idempotent — a gate query plus the unique
+  constraint (+ `IntegrityError` swallow) mean re-sync / re-link never
+  duplicates. No backfill migration: the hook runs for every credit
+  account on every sync. Depository/loan accounts get nothing.
+  `tests/test_plaid_sync.py` +2. Budget math in `spec/budget-api.md`.

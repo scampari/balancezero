@@ -12,6 +12,9 @@ from api_helpers import parse_month as _parse_month
 from models import Account, Category, Transaction, db
 
 _GROUP_CATEGORY_ERROR = {"error": "that category is a group — pick one of its subcategories"}
+_PAYMENT_CATEGORY_ERROR = {
+    "error": "that's a credit-card payment category — its balance is driven by card activity, not assignment"
+}
 
 transactions_bp = Blueprint("transactions_api", __name__, url_prefix="/api")
 
@@ -115,6 +118,8 @@ def patch_transaction(transaction_id):
             return jsonify({"error": "forbidden"}), 403
         if _category_has_children(category.id):
             return jsonify(_GROUP_CATEGORY_ERROR), 400
+        if category.payment_account_id is not None:
+            return jsonify(_PAYMENT_CATEGORY_ERROR), 400
         category_name = category.name
 
     transaction.category_id = category_id
@@ -186,6 +191,8 @@ def create_transaction():
             return jsonify({"error": "forbidden"}), 403
         if _category_has_children(category.id):
             return jsonify(_GROUP_CATEGORY_ERROR), 400
+        if category.payment_account_id is not None:
+            return jsonify(_PAYMENT_CATEGORY_ERROR), 400
         category_name = category.name
     else:
         # No category given — auto-fill from a prior same-merchant choice.

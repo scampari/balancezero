@@ -80,10 +80,19 @@ export interface BudgetCategory {
   // sum of its children (+ any own legacy amounts); it can't be allocated to
   // or have transactions assigned to it.
   is_group: boolean
+  // An auto-created credit-card payment envelope, bound to a card (changes/021).
+  // Keeps its allocation input, but can't be renamed / moved / archived / targeted.
+  is_payment_category: boolean
+  payment_account_id: number | null
   allocated_this_month: string
   spent_this_month: string
   available: string
   target: CategoryTarget | null
+  // Present only on payment categories — month-scoped card activity + the
+  // card's (negative) balance, for the payoff-progress line.
+  card_spending_this_month?: string
+  card_payments_this_month?: string
+  card_balance?: string
 }
 
 export interface BudgetTotals {

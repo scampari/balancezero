@@ -20,6 +20,18 @@ def category_has_children(category_id):
     )
 
 
+def is_payment_category(category_id):
+    """True if the category is an auto-created credit-card payment envelope
+    (changes/021). Transactions can't be assigned to one — its balance is
+    driven by card activity, not manual categorization."""
+    return (
+        db.session.query(Category.id)
+        .filter(Category.id == category_id, Category.payment_account_id.isnot(None))
+        .first()
+        is not None
+    )
+
+
 def infer_category_id(user_id, description, cache=None):
     """Auto-categorize by reuse: the category from the user's most recent
     *categorized* transaction with the exact same description (same
@@ -38,6 +50,14 @@ def infer_category_id(user_id, description, cache=None):
         .filter(Category.parent_id == Transaction.category_id, Category.archived.is_(False))
         .exists()
     )
+    # ...and never auto-target an auto-created credit-card payment envelope
+    # (changes/021). A separate correlated subquery, not a join, so it doesn't
+    # collide with the is_group subquery's Category reference.
+    is_payment = (
+        db.session.query(Category.id)
+        .filter(Category.id == Transaction.category_id, Category.payment_account_id.isnot(None))
+        .exists()
+    )
     prior = (
         db.session.query(Transaction.category_id)
         .join(Account, Transaction.account_id == Account.id)
@@ -46,6 +66,7 @@ def infer_category_id(user_id, description, cache=None):
             Transaction.description == description,
             Transaction.category_id.isnot(None),
             ~is_group,
+            ~is_payment,
         )
         .order_by(Transaction.posted_at.desc(), Transaction.id.desc())
         .first()

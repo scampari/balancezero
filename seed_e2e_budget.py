@@ -50,8 +50,24 @@ with app.app_context():
     groceries = Category(user_id=user.id, name="Groceries", position=0, parent_id=food.id)
     dining = Category(user_id=user.id, name="Dining Out", position=1, parent_id=food.id)
     rent = Category(user_id=user.id, name="Rent", position=1)
-    stale = Category(user_id=user.id, name="Old Subscriptions", position=2, archived=True)
-    db.session.add_all([groceries, dining, rent, stale])
+    shopping = Category(user_id=user.id, name="Shopping", position=2)
+    stale = Category(user_id=user.id, name="Old Subscriptions", position=3, archived=True)
+    db.session.add_all([groceries, dining, rent, shopping, stale])
+    db.session.flush()
+
+    # A credit card + its auto-style "Credit Card Payments" envelope
+    # (changes/021) — plus a card purchase filed under Groceries.
+    card = Account(user_id=user.id, name="E2E Rewards Card", type="credit", subtype="credit card", balance=-120)
+    db.session.add(card)
+    db.session.flush()
+    cc_group = Category(user_id=user.id, name="Credit Card Payments", position=3)
+    db.session.add(cc_group)
+    db.session.flush()
+    cc_payment = Category(
+        user_id=user.id, name="E2E Rewards Card", parent_id=cc_group.id, position=0,
+        payment_account_id=card.id,
+    )
+    db.session.add(cc_payment)
     db.session.flush()
 
     db.session.add(CategoryTarget(category_id=rent.id, target_type="yearly", target_amount=Decimal("12000")))
@@ -67,6 +83,16 @@ with app.app_context():
             posted_at=CURRENT_MONTH,
             amount=Decimal("-55.25"),
             description="E2E Budget Grocery Run",
+        )
+    )
+    db.session.add(
+        Transaction(
+            account_id=card.id,
+            category_id=shopping.id,
+            posted_at=CURRENT_MONTH,
+            amount=Decimal("-30.00"),
+            description="E2E Card Purchase",
+            plaid_transaction_id="e2e-card-1",
         )
     )
     db.session.commit()

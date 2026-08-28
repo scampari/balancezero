@@ -13,7 +13,10 @@ STARTER_CATEGORIES = [
     ("Housing", ["Rent/Mortgage", "Utilities", "Internet & Phone"]),
     ("Food", ["Groceries", "Dining Out"]),
     ("Transportation", ["Gas", "Car Payment", "Car Insurance"]),
-    ("Debt Payments", ["Credit Card Payment", "Loans"]),
+    # No generic "Credit Card Payment" line here — connecting a card
+    # auto-creates a dedicated "Credit Card Payments" group with one
+    # envelope per card (changes/021).
+    ("Debt Payments", ["Loans"]),
     ("Health", ["Health Insurance", "Medical & Pharmacy"]),
     ("Personal", ["Subscriptions", "Shopping", "Personal Care"]),
     ("Entertainment", ["Streaming", "Hobbies", "Travel"]),
