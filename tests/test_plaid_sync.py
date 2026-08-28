@@ -426,10 +426,13 @@ def test_sync_null_cutoff_falls_back_to_the_items_creation_date(client, test_use
 # ---------------------------------------------------------------------------
 
 
-def _mock_account(account_id, current, name="Checking", available=None, iso="USD"):
+def _mock_account(account_id, current, name="Checking", available=None, iso="USD",
+                  type="depository", subtype="checking"):
     return {
         "account_id": account_id,
         "name": name,
+        "type": type,
+        "subtype": subtype,
         "balances": {"current": current, "available": available, "iso_currency_code": iso},
     }
 
@@ -489,6 +492,69 @@ def test_sync_skips_starting_balance_for_a_zero_balance_account(client, test_use
 
     account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-zero").first()
     assert Transaction.query.filter_by(account_id=account.id, description="Starting Balance").count() == 0
+
+
+# ---------------------------------------------------------------------------
+# account type + liability balances (changes/018)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_stores_account_type_and_subtype(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-type")
+
+    class _Typed:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts(
+                [_mock_account("acc-typed", 100.00, type="depository", subtype="savings")]
+            )
+
+    _patch_client(monkeypatch, _Typed())
+    assert client.post("/api/plaid/sync", headers=auth_headers).status_code == 200
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-typed").first()
+    assert account.type == "depository"
+    assert account.subtype == "savings"
+
+
+def test_sync_stores_credit_card_balance_as_a_negative_liability(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-cc")
+
+    class _Card:
+        def transactions_sync(self, *_a, **_k):
+            # Plaid reports the amount owed on a card as a positive `current`.
+            return _sync_response_with_accounts(
+                [_mock_account("acc-cc", 420.00, name="Rewards Card", type="credit", subtype="credit card")]
+            )
+
+    _patch_client(monkeypatch, _Card())
+    assert client.post("/api/plaid/sync", headers=auth_headers).status_code == 200
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-cc").first()
+    assert account.type == "credit"
+    assert account.balance == Decimal("-420.00")  # flipped to a liability
+
+    starting = Transaction.query.filter_by(account_id=account.id, description="Starting Balance").one()
+    assert starting.amount == Decimal("-420.00")
+    assert starting.is_income is False  # opening debt, not money to budget
+
+
+def test_sync_depository_account_balance_and_starting_balance_are_unchanged(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-dep")
+
+    class _Checking:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts(
+                [_mock_account("acc-dep", 900.00, type="depository", subtype="checking")]
+            )
+
+    _patch_client(monkeypatch, _Checking())
+    assert client.post("/api/plaid/sync", headers=auth_headers).status_code == 200
+
+    account = Account.query.filter_by(user_id=test_user.id, plaid_account_id="acc-dep").first()
+    assert account.balance == Decimal("900.00")
+    starting = Transaction.query.filter_by(account_id=account.id, description="Starting Balance").one()
+    assert starting.amount == Decimal("900.00")
+    assert starting.is_income is True
 
 
 # ---------------------------------------------------------------------------

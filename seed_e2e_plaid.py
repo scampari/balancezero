@@ -32,6 +32,7 @@ with app.app_context():
     db.session.commit()
 
     fernet = Fernet(os.environ["PLAID_ENCRYPTION_KEY"])
+    items_by_suffix = {}
     for suffix, name in (("a", "First Platypus Bank"), ("b", "Second Gingham Bank")):
         item = PlaidItem(
             user_id=user.id,
@@ -41,14 +42,31 @@ with app.app_context():
         )
         db.session.add(item)
         db.session.flush()
+        items_by_suffix[suffix] = item
         db.session.add(
             Account(
                 user_id=user.id,
                 name=f"{name} Checking",
                 plaid_account_id=f"e2e-acct-{suffix}",
                 plaid_item_id=item.id,
+                type="depository",
+                subtype="checking",
                 balance=1000,
             )
         )
+    # A second account under the first institution — a credit card, so the
+    # grouped grid and the negative-liability styling both have something to
+    # show (changes/018).
+    db.session.add(
+        Account(
+            user_id=user.id,
+            name="First Platypus Rewards Card",
+            plaid_account_id="e2e-acct-a-card",
+            plaid_item_id=items_by_suffix["a"].id,
+            type="credit",
+            subtype="credit card",
+            balance=-250,
+        )
+    )
     db.session.commit()
-    print("Seeded e2e Plaid user 'sam-plaid' with 2 linked institutions + 2 accounts.")
+    print("Seeded e2e Plaid user 'sam-plaid' with 2 linked institutions + 3 accounts.")

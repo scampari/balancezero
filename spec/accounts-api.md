@@ -30,9 +30,12 @@ reads it back out for the user.
 **Action:** `GET /api/accounts`, `Authorization: Bearer <access token>`.
 **Input:** None.
 **Expected output:** `200`, JSON `{"accounts": [{"id": ..., "name": ...,
-"currency": ..., "balance": "...", "available_balance": "..." | null,
+"type": "..." | null, "subtype": "..." | null, "currency": ...,
+"balance": "...", "available_balance": "..." | null,
 "balance_date": "..." | null}]}`. Only the authenticated user's own
-accounts. `plaid_account_id` never appears in the response.
+accounts. `plaid_account_id` never appears in the response. `type` /
+`subtype` are Plaid's classification (changes/018), null for
+demo/manual/pre-018 rows.
 
 #### Error cases
 - **When no/invalid access token, Then** `401`.
@@ -56,6 +59,9 @@ accounts. `plaid_account_id` never appears in the response.
   — covers § Done-when: no Plaid identifiers leaked.
 
 ## Changes
+- 018 (2026-08-27) — serializer gains `type` / `subtype` from the new
+  `Account` columns. `tests/test_accounts_api.py` §
+  `"test_list_accounts_includes_type_and_subtype"`.
 - 005 (2026-08-26) — contract + build in one pass (small, additive,
   interactive session — not routed through the async plan-grill pipeline).
   All 4 tests confirmed red then green.

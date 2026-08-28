@@ -261,6 +261,11 @@ export async function setCategoryTarget(
 export interface Account {
   id: number
   name: string
+  // Plaid's classification (changes/018). `type` is the coarse bucket
+  // ("depository" | "credit" | "loan" | "investment"), `subtype` the specific
+  // kind ("checking" | "credit card" | ...). Null for demo/manual accounts.
+  type: string | null
+  subtype: string | null
   currency: string
   balance: string
   available_balance: string | null

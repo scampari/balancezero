@@ -43,6 +43,21 @@ test.describe('linked institutions (multi-bank)', () => {
     await expect(page.getByRole('button', { name: 'Connect another bank' })).toBeVisible()
   })
 
+  test('account cards are grouped by institution with a type label', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Accounts' }).click()
+
+    // The grid is grouped under an institution heading…
+    const platypusGroup = page.locator('[data-account-group="First Platypus Bank"]')
+    await expect(platypusGroup).toBeVisible()
+    // …and that group holds both of that bank's accounts, including the card.
+    await expect(platypusGroup.getByText('First Platypus Bank Checking')).toBeVisible()
+    await expect(platypusGroup.getByText('First Platypus Rewards Card')).toBeVisible()
+    await expect(platypusGroup.getByText('Credit Card')).toBeVisible()
+    // The card's balance is a negative liability.
+    await expect(platypusGroup.getByText('-$250.00')).toBeVisible()
+  })
+
   test('removing an institution drops it from the list but keeps its accounts', async ({ page }) => {
     await login(page)
     await page.getByRole('link', { name: 'Accounts' }).click()
