@@ -17,3 +17,18 @@ export function shortMonth(key: string): string {
   const [year, month] = key.split('-').map(Number)
   return new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'short' })
 }
+
+export type Grain = 'week' | 'month' | 'quarter' | 'year'
+
+// A bucket key -> a short axis/label string, per grain:
+//   week    "2026-W34" -> "W34 '26"
+//   month   "2026-03"  -> "Mar '26"
+//   quarter "2026-Q3"  -> "Q3 '26"
+//   year    "2026"     -> "2026"
+export function bucketLabel(key: string, grain: Grain): string {
+  if (grain === 'year') return key
+  const [year, part] = key.split('-')
+  const yy = `'${year.slice(2)}`
+  if (grain === 'month') return `${shortMonth(key)} ${yy}`
+  return `${part} ${yy}` // "W34" / "Q3"
+}

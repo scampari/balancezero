@@ -38,7 +38,7 @@ test.describe('reports page', () => {
     await expect(page).toHaveURL(/\/reports$/)
 
     // Panels
-    await expect(page.getByRole('heading', { name: 'Spending by month' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Spending by period' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Income vs. expense' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Top merchants' })).toBeVisible()
 
@@ -46,23 +46,53 @@ test.describe('reports page', () => {
     await expect(page.getByLabel('From')).toBeVisible()
     await expect(page.getByLabel('To')).toBeVisible()
 
-    // Seeded merchant + rent category surface as text
+    // Seeded merchant + rent category surface in the Top categories panel
     await expect(page.getByText('WHOLE FOODS')).toBeVisible()
-    await expect(page.getByText('Rent', { exact: true })).toBeVisible()
+    const topCategories = page.locator('section', { hasText: 'Top categories' })
+    await expect(topCategories.getByText('Rent', { exact: true })).toBeVisible()
   })
 
   test('changing the range re-fetches', async ({ page }) => {
     await login(page)
     await page.getByRole('link', { name: 'Reports' }).click()
 
-    const monthOverMonthRows = page.locator('table tbody tr')
-    await expect(monthOverMonthRows.first()).toBeVisible()
-    expect(await monthOverMonthRows.count()).toBeGreaterThan(1)
+    const periodRows = page.locator('table tbody tr')
+    await expect(periodRows.first()).toBeVisible()
+    expect(await periodRows.count()).toBeGreaterThan(1)
 
     // Narrow the window to a single month.
     const to = await page.getByLabel('To').inputValue()
     await page.getByLabel('From').selectOption(to)
 
-    await expect(monthOverMonthRows).toHaveCount(1)
+    await expect(periodRows).toHaveCount(1)
+  })
+
+  test('switching the grain to quarter changes the bucket count', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Reports' }).click()
+
+    const periodRows = page.locator('table tbody tr')
+    await expect(periodRows.first()).toBeVisible()
+    const monthlyCount = await periodRows.count()
+
+    await page.getByRole('button', { name: 'quarter', exact: true }).click()
+
+    await expect(page).toHaveURL(/grain=quarter/)
+    await expect.poll(() => periodRows.count()).toBeLessThan(monthlyCount)
+  })
+
+  test('an account filter scopes the report and persists in the URL', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Reports' }).click()
+
+    await expect(page.getByText('WHOLE FOODS')).toBeVisible()
+
+    await page.locator('summary', { hasText: 'Accounts' }).click()
+    await page.getByText('Reports Card', { exact: true }).click()
+
+    await expect(page).toHaveURL(/accounts=/)
+    // Reports Card only has CORNER STORE spending — WHOLE FOODS is on the other account.
+    await expect(page.getByText('CORNER STORE')).toBeVisible()
+    await expect(page.getByText('WHOLE FOODS')).toHaveCount(0)
   })
 })

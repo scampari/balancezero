@@ -36,7 +36,8 @@ with app.app_context():
     db.session.commit()
 
     account = Account(user_id=user.id, name="Reports Checking", balance=5000)
-    db.session.add(account)
+    card = Account(user_id=user.id, name="Reports Card", type="credit", subtype="credit card", balance=-400)
+    db.session.add_all([account, card])
     groceries = Category(user_id=user.id, name="Groceries")
     rent = Category(user_id=user.id, name="Rent")
     db.session.add_all([groceries, rent])
@@ -49,8 +50,10 @@ with app.app_context():
                 Transaction(account_id=account.id, posted_at=when, amount=4000, description="Payroll", is_income=True),
                 Transaction(account_id=account.id, posted_at=when, amount=-1500, description="Landlord", category_id=rent.id),
                 Transaction(account_id=account.id, posted_at=when, amount=-300 - offset * 25, description="WHOLE FOODS", category_id=groceries.id),
-                Transaction(account_id=account.id, posted_at=when, amount=-45, description="CORNER STORE", category_id=groceries.id),
+                Transaction(account_id=card.id, posted_at=when, amount=-45, description="CORNER STORE", category_id=groceries.id),
+                # A credit-card payment — a transfer, excluded from the report by default.
+                Transaction(account_id=account.id, posted_at=when, amount=-200, description="CARD PAYMENT", transfer=True),
             ]
         )
     db.session.commit()
-    print("Seeded e2e reports user 'sam-reports' with 4 months of transactions.")
+    print("Seeded e2e reports user 'sam-reports' with 4 months of transactions across 2 accounts.")

@@ -8,21 +8,30 @@ depends_on: []
 ## Does
 Adds one read-only endpoint, `GET /api/reports`, returning every dataset the
 `/reports` page renders: spending by category over time, income vs. expense
-per month, month-over-month total spend, and top merchants. Aggregation
+per period, period-over-period total spend, and top merchants. Aggregation
 only — no schema change. Rendered client-side with hand-rolled inline SVG
 (no charting library).
 
+Customizable (changes/020): filter by account, filter by category/group
+(a group id expands to its children), pick the period **grain** (week /
+month / quarter / year), and include or exclude transfers.
+
 ## Done when
-- A user can request a report for a month range and get per-month,
+- A user can request a report for a month range and get per-bucket,
   per-category, and per-merchant rollups back as JSON.
 - Omitting the range defaults to the last 6 months (inclusive of the
-  current month).
-- Every array is zero-filled across the requested months — a month with no
-  data still appears, with zeros.
+  current month). Omitting `grain` defaults to `month`.
+- Every array is zero-filled across the requested buckets — a bucket with
+  no data still appears, with zeros.
 - All money values are 2-decimal strings, same as every other money field
   in the API.
 - The demo user can view reports (read-only, own rows only — makes the
   public demo useful; see Notes).
+- `accounts` / `categories` scope every dataset; an unknown or foreign id
+  → `400`. `exclude_transfers` defaults to `true` (a card payment isn't
+  spending); `exclude_transfers=false` includes them.
+- The response echoes the applied filters under `filters` so the page can
+  restore its state from the URL.
 
 ## Integration test contract
 
@@ -30,24 +39,29 @@ only — no schema change. Rendered client-side with hand-rolled inline SVG
 
 **Setup:** An authenticated user with some `Transaction` rows (via owned
 `Account`s), optionally categorized, optionally `is_income`.
-**Action:** `GET /api/reports?from=YYYY-MM&to=YYYY-MM` (both query params
-optional).
-**Input:** `from` / `to` are `YYYY-MM`. Default: `to` = current month,
-`from` = 5 months earlier.
+**Action:** `GET /api/reports?from=YYYY-MM&to=YYYY-MM&grain=month&accounts=1,2&categories=4&exclude_transfers=true`
+(all query params optional).
+**Input:** `from` / `to` are `YYYY-MM` (the range bounds; buckets are derived
+from them at the chosen grain). Default: `to` = current month, `from` = 5
+months earlier. `grain` ∈ `week|month|quarter|year` (default `month`).
+`accounts` / `categories` are comma-separated owned ids. `exclude_transfers`
+∈ `true|false` (default `true`).
 **Expected output:** `200`, JSON:
 ```
 {
   "from": "2026-03", "to": "2026-08",
-  "months": ["2026-03", ..., "2026-08"],
+  "grain": "month",
+  "buckets": ["2026-03", ..., "2026-08"],   // key format per grain: YYYY-Www / YYYY-MM / YYYY-Qn / YYYY
+  "filters": {"accounts": [1,2], "categories": [4], "grain": "month", "exclude_transfers": true},
   "spending_by_category": [
     {"category_id": 12|null, "category": "Groceries"|"Uncategorized",
      "parent_id": 4|null, "total": "812.55",
-     "by_month": [{"month": "2026-03", "amount": "120.00"}, ...]}  // zero-filled, in `months` order
+     "by_bucket": [{"bucket": "2026-03", "amount": "120.00"}, ...]}  // zero-filled, in `buckets` order
   ],
-  "income_vs_expense": [{"month": "2026-03", "income": "5000.00", "expense": "3120.55", "net": "1879.45"}, ...],
-  "month_over_month_spend": [
-    {"month": "2026-03", "total": "3120.55", "change": null, "change_pct": null},   // first month: nulls
-    {"month": "2026-04", "total": "3450.10", "change": "329.55", "change_pct": "0.1056"}, ...
+  "income_vs_expense": [{"bucket": "2026-03", "income": "5000.00", "expense": "3120.55", "net": "1879.45"}, ...],
+  "month_over_month_spend": [   // key name kept for back-compat; it is period-over-period
+    {"bucket": "2026-03", "total": "3120.55", "change": null, "change_pct": null},   // first bucket: nulls
+    {"bucket": "2026-04", "total": "3450.10", "change": "329.55", "change_pct": "0.1056"}, ...
   ],
   "top_merchants": [{"description": "AMAZON", "total": "402.11", "count": 9}, ...]   // <= 10, expense-only
 }
@@ -69,7 +83,11 @@ Definitions (consistent with `budget_api`):
 - **When no/invalid access token, Then** `401`.
 - **When `from` or `to` is not a valid `YYYY-MM`, Then** `400`.
 - **When `from` is after `to`, Then** `400`.
-- **When the range exceeds 24 months, Then** `400` (query-cost bound).
+- **When the range exceeds the grain's bucket cap** (week 53, month 24,
+  quarter 12, year 10)**, Then** `400` (query-cost bound).
+- **When `grain` is not one of the four values, Then** `400`.
+- **When `accounts` / `categories` contains a non-integer, or an id the
+  user doesn't own, Then** `400`.
 - **When the user has no matching transactions, Then** `200` with
   zero-filled arrays (`spending_by_category` and `top_merchants` are `[]`;
   `income_vs_expense` / `month_over_month_spend` have one zeroed row per
@@ -110,3 +128,16 @@ Definitions (consistent with `budget_api`):
   (hand-rolled SVG) + `client.ts` types + `/reports` route + nav link. Full
   backend suite 177 passed / 5 skipped; e2e 21 passed. See
   `changes/009-reporting/plan.md`.
+- 020 (2026-08-27) — customization. `GET /api/reports` gains `grain`
+  (`week`/`month`/`quarter`/`year`, default `month`), `accounts`,
+  `categories` (a group id expands to its non-archived children), and
+  `exclude_transfers` (default `true`). Response renamed `months`→`buckets`
+  and per-row `month`→`bucket` (`by_month`→`by_bucket`); adds `grain` and a
+  `filters` echo. The flat 24-month cap became a per-grain bucket-count cap.
+  `reports_api.py` rewrite; `tests/test_reports_api.py` +10;
+  `ReportsPage.tsx` filter bar (grain segmented control, account/category
+  multi-selects, exclude-transfers toggle) with state in the URL query
+  string; `MonthBars` takes a `formatLabel`; `chartScale.bucketLabel`.
+  `seed_e2e_reports.py` + `reports.spec.ts` +2. Also converted
+  `seed_e2e_budget.py` to rebuild-every-run (the spec mutates the tree) and
+  added a render wait to the reorder e2e — both pre-existing flakes.
