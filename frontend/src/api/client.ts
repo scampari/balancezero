@@ -138,6 +138,9 @@ export interface TransactionEntry {
   description: string
   pending: boolean
   is_income: boolean
+  // A movement between the user's own accounts (incl. a credit-card payment).
+  // Excluded from spending/income totals — see changes/019.
+  transfer: boolean
 }
 
 export interface TransactionsResponse {

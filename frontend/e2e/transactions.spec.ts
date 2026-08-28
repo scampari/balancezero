@@ -52,6 +52,14 @@ test.describe('transactions page', () => {
     await expect(page.getByText('-$42.50')).toBeVisible()
   })
 
+  test('a transfer transaction shows a Transfer badge', async ({ page }) => {
+    await login(page)
+    await page.getByRole('link', { name: 'Transactions' }).click()
+
+    const row = page.getByRole('row', { name: /E2E Transfer To Savings/ })
+    await expect(row.getByText('Transfer')).toBeVisible()
+  })
+
   test('changing category persists', async ({ page }) => {
     // Arrange
     await login(page)

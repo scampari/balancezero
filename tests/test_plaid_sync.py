@@ -558,6 +558,40 @@ def test_sync_depository_account_balance_and_starting_balance_are_unchanged(clie
 
 
 # ---------------------------------------------------------------------------
+# transfer detection (changes/019)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_flags_transfers_from_personal_finance_category(client, test_user, auth_headers, monkeypatch):
+    item = _seed_item(test_user, "item-xfer")
+    account = Account(user_id=test_user.id, name="Checking", plaid_account_id="acc-x", plaid_item_id=item.id)
+    db.session.add(account)
+    db.session.commit()
+
+    class _Mixed:
+        def transactions_sync(self, *_a, **_k):
+            return _mock_sync_response(added=[
+                {"transaction_id": "xfer-1", "account_id": "acc-x", "amount": 200.0,
+                 "date": "2026-08-10", "name": "Transfer to savings", "pending": False,
+                 "personal_finance_category": {"primary": "TRANSFER_OUT"}},
+                {"transaction_id": "pay-1", "account_id": "acc-x", "amount": 150.0,
+                 "date": "2026-08-11", "name": "AUTOPAY CREDIT CARD", "pending": False,
+                 "personal_finance_category": {"primary": "LOAN_PAYMENTS"}},
+                {"transaction_id": "buy-1", "account_id": "acc-x", "amount": 12.0,
+                 "date": "2026-08-12", "name": "COFFEE", "pending": False,
+                 "personal_finance_category": {"primary": "FOOD_AND_DRINK"}},
+            ])
+
+    _patch_client(monkeypatch, _Mixed())
+    assert client.post("/api/plaid/sync", headers=auth_headers).status_code == 200
+
+    by_id = {t.plaid_transaction_id: t for t in Transaction.query.filter_by(account_id=account.id).all()}
+    assert by_id["xfer-1"].transfer is True
+    assert by_id["pay-1"].transfer is True
+    assert by_id["buy-1"].transfer is False
+
+
+# ---------------------------------------------------------------------------
 # auto-categorization by prior choice (changes/013)
 # ---------------------------------------------------------------------------
 

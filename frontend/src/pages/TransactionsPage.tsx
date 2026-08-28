@@ -230,6 +230,14 @@ export function TransactionsPage() {
                           Pending
                         </span>
                       )}
+                      {transaction.transfer && (
+                        <span
+                          title="A movement between your own accounts — not counted as spending"
+                          className="ml-2 rounded-full border border-(--color-border) px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase"
+                        >
+                          Transfer
+                        </span>
+                      )}
                     </td>
                     <td
                       className={`tabular-nums whitespace-nowrap px-4 py-3 text-right font-medium ${

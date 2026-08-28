@@ -145,3 +145,10 @@ still has it and changes it, you probably want it back).
   can't hold transactions: `PATCH` and `POST /api/transactions` with such a
   `category_id` → `400`. Auto-categorization (013) skips group categories
   too. See `spec/budget-api.md`.
+- 019 (2026-08-27) — `Transaction.transfer` (Boolean, default false).
+  Migration `ca283921af94`. Set on the Plaid sync path from the
+  transaction's `personal_finance_category.primary`
+  (`TRANSFER_IN` / `TRANSFER_OUT` / `LOAN_PAYMENTS`); manual transactions
+  are always false. Surfaced in the `GET /api/transactions` serializer as
+  `transfer` and badged on the Transactions page. Budget math excludes
+  transfers — see `spec/budget-api.md`. `tests/test_plaid_sync.py` +1, e2e +1.

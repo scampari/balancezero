@@ -33,6 +33,17 @@ with app.app_context():
                 description="E2E Grocery Run",
             )
         )
+        # A transfer row — the Transactions page badges it and the budget
+        # math ignores it (changes/019).
+        db.session.add(
+            Transaction(
+                account_id=account.id,
+                posted_at=date.today(),
+                amount=Decimal("-300.00"),
+                description="E2E Transfer To Savings",
+                transfer=True,
+            )
+        )
         db.session.commit()
         print("Seeded e2e account/category/transaction.")
     else:

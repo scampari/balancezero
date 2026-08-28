@@ -232,3 +232,12 @@ No delete endpoint exists — categories are archived, never removed, so their h
   in `localStorage`) + `TransactionsPage.tsx` (groups out of the pickers).
   `tests/test_budget_api.py` +8, `tests/test_transactions.py` +2, e2e +1.
   Full suite 208 passed / 6 skipped.
+- 019 (2026-08-27) — transfers excluded from budget math. `GET /api/budget`
+  now filters `Transaction.transfer.is_(False)` out of `income_total`,
+  `spent_total`, and `spent_this_month` — a movement between the user's own
+  accounts (a bank transfer, or a credit-card payment) neither spends nor
+  earns, so it must not touch `ready_to_assign`, a category's
+  `spent_this_month`, or its `available`. Transfer rows still exist and
+  still move each side's `Account.balance`. New `Transaction.transfer`
+  column + migration `ca283921af94`; set on the Plaid path (see
+  `spec/plaid-sync.md`). `tests/test_budget_api.py` +2.
