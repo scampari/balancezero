@@ -1,7 +1,7 @@
 # Slicing: link manually-added transactions to their synced duplicates
 
 > Date: 2026-08-28
-> Status: planning
+> Status: built
 
 ## What & Why
 A user who wants to keep their budget current can enter a transaction manually before it
@@ -126,3 +126,24 @@ its money fields, and the user's `category_id` / `is_income` choices survive.
   seeded Plaid-linked `Account`, which the existing offline harness already supports.
 - `transactions_linked` must be added to `_EMPTY_COUNTERS` before the tests can assert on
   it in the per-item result and `totals`.
+
+## Build result (2026-08-28)
+
+Built as planned, one commit + a refactor pass, on branch
+`changes/022-link-manual-on-sync`:
+
+- `api_helpers.py` — `description_similarity` / `_normalize_description` /
+  `DESCRIPTION_MATCH_THRESHOLD = 0.80`.
+- `plaid_api.py` — `_adopt_manual_transaction`; `_upsert_transaction` adopts before
+  inserting and returns `"linked"`; both `_sync_one_item` loops route that to
+  `transactions_linked`. Refactor extracted `_plaid_posted_date` (shared with
+  `_within_import_window`).
+- No migration.
+- Full suite: **259 passed / 6 skipped**.
+
+Deviation from the locked tests: `test_sync_adopts_a_matching_manual_row_and_is_idempotent_on_resync`
+seeded the manual description as `"Blue Bottle"`, which scores 0.59 against the Plaid
+name — below the agreed 0.80 threshold, so a contract-correct implementation could never
+adopt it. Widened the seed to `"BLUE BOTTLE COFFEE 0123"` (0.94), matching its seven
+sibling tests. No assertion changed; the description-overwrite assertion is now a real
+check rather than a tautology. Recorded in `spec/plaid-sync.md` § Tests.
