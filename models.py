@@ -164,6 +164,13 @@ class Transaction(db.Model):
     # never backfilled — a one-time per-account "Starting Balance" transaction
     # reconciles current bank balances instead (see spec/transactions.md's Notes).
     is_income = db.Column(db.Boolean, nullable=False, default=False)
+    # A movement between the user's own accounts — a checking→savings transfer,
+    # or a credit-card payment (changes/019). Set on the Plaid path from the
+    # transaction's personal_finance_category; manual transactions are always
+    # false. Transfers are excluded from spending/income totals (they neither
+    # spend nor earn — the money just moved), but the rows still exist and
+    # still move each side's Account.balance.
+    transfer = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     __table_args__ = (

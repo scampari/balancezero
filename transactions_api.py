@@ -27,6 +27,7 @@ def _serialize(transaction, category_name):
         "description": transaction.description,
         "pending": transaction.pending,
         "is_income": transaction.is_income,
+        "transfer": transaction.transfer,
     }
 
 

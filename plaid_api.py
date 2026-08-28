@@ -294,6 +294,18 @@ def _add_starting_balance(account, plaid_item):
     )
 
 
+# Plaid `personal_finance_category.primary` values that mean "money moved
+# between the user's own accounts, it wasn't spent or earned" — a bank
+# transfer, or a credit-card payment (which Plaid files under LOAN_PAYMENTS,
+# detail LOAN_PAYMENTS_CREDIT_CARD_PAYMENT).
+_TRANSFER_PRIMARY_CATEGORIES = ("TRANSFER_IN", "TRANSFER_OUT", "LOAN_PAYMENTS")
+
+
+def _is_transfer(plaid_transaction):
+    pfc = plaid_transaction.get("personal_finance_category") or {}
+    return pfc.get("primary") in _TRANSFER_PRIMARY_CATEGORIES
+
+
 def _upsert_transaction(account, plaid_transaction, category_cache=None):
     """Plaid-owned fields only — never touches category_id on an *existing*
     row, so a user's categorization survives any future upsert. Plaid's
@@ -312,6 +324,7 @@ def _upsert_transaction(account, plaid_transaction, category_cache=None):
     transaction.description = plaid_transaction["name"]
     transaction.posted_at = plaid_transaction["date"]
     transaction.pending = plaid_transaction["pending"]
+    transaction.transfer = _is_transfer(plaid_transaction)
 
     if is_new and transaction.category_id is None and not transaction.is_income:
         inferred = infer_category_id(account.user_id, transaction.description, category_cache)

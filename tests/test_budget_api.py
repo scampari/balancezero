@@ -1117,7 +1117,7 @@ def _account(user_id, name="Checking"):
     return account
 
 
-def _txn(account_id, posted_at, amount, category_id=None, description="txn"):
+def _txn(account_id, posted_at, amount, category_id=None, description="txn", transfer=False, is_income=False):
     from decimal import Decimal
 
     from models import Transaction
@@ -1129,6 +1129,8 @@ def _txn(account_id, posted_at, amount, category_id=None, description="txn"):
             posted_at=posted_at,
             amount=Decimal(amount),
             description=description,
+            transfer=transfer,
+            is_income=is_income,
         )
     )
     db.session.commit()
@@ -1168,6 +1170,35 @@ def test_get_budget_spent_this_month_is_zero_without_transactions(client, test_u
     # Act / Assert
     entry = _budget_entry(client, auth_headers, cid)
     assert Decimal(entry["spent_this_month"]) == Decimal("0")
+
+
+def test_get_budget_excludes_transfer_transactions_from_a_category(client, test_user, auth_headers):
+    # changes/019 — a transfer categorized to a spending category must not
+    # show as spend: not in spent_this_month, not in available.
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "-40.00", category_id=cid)
+    _txn(account.id, date.today().replace(day=1), "-500.00", category_id=cid, transfer=True)
+    client.post(f"/api/categories/{cid}/allocations", json={"month": CURRENT_MONTH, "amount": "100.00"}, headers=auth_headers)
+
+    entry = _budget_entry(client, auth_headers, cid)
+    assert Decimal(entry["spent_this_month"]) == Decimal("-40.00")  # transfer skipped
+    assert Decimal(entry["available"]) == Decimal("60.00")  # 100 allocated - 40 spent
+
+
+def test_get_budget_ready_to_assign_ignores_a_transfer_marked_income(client, test_user, auth_headers):
+    # changes/019 — Plaid can mark a transfer's inflow side is_income; it must
+    # not inflate ready_to_assign.
+    from decimal import Decimal
+
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "800.00", is_income=True)
+    _txn(account.id, date.today().replace(day=1), "300.00", is_income=True, transfer=True)
+
+    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    assert Decimal(body["ready_to_assign"]) == Decimal("800.00")  # transfer's 300 excluded
 
 
 def test_get_budget_totals_sum_active_categories_and_exclude_archived(client, test_user, auth_headers):

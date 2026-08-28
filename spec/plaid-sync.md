@@ -311,3 +311,9 @@ server-side logging of the swallowed exception in `sync()`.
   `is_income=false` (carried debt, not money to budget). Migration
   `079c5813dbbb` (pure DDL). Depository accounts unchanged.
   `tests/test_plaid_sync.py` +3.
+- 019 (2026-08-27) — transfer detection. `_upsert_transaction` sets
+  `Transaction.transfer` when Plaid's `personal_finance_category.primary`
+  is `TRANSFER_IN`, `TRANSFER_OUT`, or `LOAN_PAYMENTS` (a credit-card
+  payment). Missing/blank category → false. Feeds the budget-math
+  exclusion in `spec/budget-api.md`. Migration `ca283921af94`.
+  `tests/test_plaid_sync.py` +1.

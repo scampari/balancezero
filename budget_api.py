@@ -374,8 +374,12 @@ def get_budget():
     start, end = _month_bounds(month)
     user_id = _current_user_id()
 
+    # Transfers between the user's own accounts (incl. credit-card payments)
+    # never count as spending or income — the money just moved (changes/019).
     income_total = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
-        Account.user_id == user_id, Transaction.is_income.is_(True)
+        Account.user_id == user_id,
+        Transaction.is_income.is_(True),
+        Transaction.transfer.is_(False),
     ).scalar() or Decimal("0")
     total_allocated = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
         BudgetAllocation.user_id == user_id
@@ -404,12 +408,14 @@ def get_budget():
         allocated_total = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter_by(
             category_id=cat.id
         ).scalar() or Decimal("0")
-        spent_total = db.session.query(db.func.sum(Transaction.amount)).filter_by(
-            category_id=cat.id
+        spent_total = db.session.query(db.func.sum(Transaction.amount)).filter(
+            Transaction.category_id == cat.id,
+            Transaction.transfer.is_(False),
         ).scalar() or Decimal("0")
         spent_this_month = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
             Transaction.category_id == cat.id,
             Account.user_id == user_id,
+            Transaction.transfer.is_(False),
             Transaction.posted_at >= start,
             Transaction.posted_at < end,
         ).scalar() or Decimal("0")
