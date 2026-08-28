@@ -383,6 +383,13 @@ def _is_transfer(plaid_transaction):
     return pfc.get("primary") in _TRANSFER_PRIMARY_CATEGORIES
 
 
+def _plaid_posted_date(plaid_transaction):
+    """Plaid's SDK returns `date` as a native `datetime.date`; raw JSON and
+    test fixtures use an ISO string. Normalize to `date`."""
+    posted = plaid_transaction["date"]
+    return date.fromisoformat(posted) if isinstance(posted, str) else posted
+
+
 # spec/plaid-sync.md § Manual-transaction adoption — how far a hand-entered
 # row's date may sit from the bank's posted date and still be the same
 # transaction.
@@ -397,9 +404,7 @@ def _adopt_manual_transaction(account, plaid_transaction):
     match. The synthetic "Starting Balance" row is never a candidate. When
     several qualify, the nearest date wins (then the strongest description
     match, then the lowest id). Returns the row to adopt, or None."""
-    posted = plaid_transaction["date"]
-    if isinstance(posted, str):
-        posted = date.fromisoformat(posted)
+    posted = _plaid_posted_date(plaid_transaction)
     amount = -Decimal(str(plaid_transaction["amount"]))
 
     candidates = (
@@ -416,12 +421,11 @@ def _adopt_manual_transaction(account, plaid_transaction):
         similarity = description_similarity(row.description, plaid_transaction["name"])
         if similarity < DESCRIPTION_MATCH_THRESHOLD:
             continue
+        # id is unique, so the first three keys already order every pair —
+        # nearest date, then strongest match (negated for ascending sort).
         scored.append((distance, -similarity, row.id, row))
 
-    if not scored:
-        return None
-    scored.sort(key=lambda entry: entry[:3])
-    return scored[0][3]
+    return min(scored)[-1] if scored else None
 
 
 def _upsert_transaction(account, plaid_transaction, category_cache=None):
@@ -491,9 +495,9 @@ _EMPTY_COUNTERS = {
     "transactions_modified": 0,
     "transactions_removed": 0,
     # changes/022 — an incoming transaction merged into a pre-existing manual
-    # row instead of inserted as a new one. The adoption logic that increments
-    # this is build's job; the key lives here now so the per-item result dict,
-    # totals accumulation, and mutation-during-pagination reset all carry it.
+    # row instead of inserted as a new one (see _adopt_manual_transaction).
+    # Lives alongside the others so the per-item result, totals, and the
+    # mutation-during-pagination reset all carry it for free.
     "transactions_linked": 0,
 }
 
@@ -512,10 +516,7 @@ def _within_import_window(plaid_transaction, item):
     transactions dated on/after the item's import cutoff are imported.
     Applies to `added` and `modified`; `removed` is naturally a no-op for
     anything never imported."""
-    posted = plaid_transaction["date"]
-    if isinstance(posted, str):
-        posted = date.fromisoformat(posted)
-    return posted >= _import_cutoff(item)
+    return _plaid_posted_date(plaid_transaction) >= _import_cutoff(item)
 
 
 def _should_import(plaid_transaction, item):
