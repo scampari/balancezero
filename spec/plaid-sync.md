@@ -269,11 +269,17 @@ with.
   ratio being `difflib` on the normalized text, and pairs either side of
   the `0.80` line.
 
-All 14 confirmed red before commit — the 8 sync cases fail
+All 14 confirmed red before implementation — the 8 sync cases failed
 `transactions_linked == 1` (`0 == 1`, adoption not implemented); the 6
-helper cases fail `AttributeError` (`description_similarity` doesn't exist
-yet). Rest of `tests/test_plaid_sync.py` unaffected (24 passed / 2
-Sandbox-skipped).
+helper cases failed `AttributeError` (`description_similarity` didn't
+exist). **Built** — all 14 green, full suite 259 passed / 6 skipped. One
+locked-test setup fix during build:
+`test_sync_adopts_a_matching_manual_row_and_is_idempotent_on_resync`
+seeded the manual row's description as `"Blue Bottle"`, which scores 0.59
+against the Plaid name — below the agreed 0.80 threshold, so the row could
+never be adopted by a contract-correct implementation. Widened to
+`"BLUE BOTTLE COFFEE 0123"` (0.94) to match its sibling tests; no
+assertion changed, and the overwrite assertion is now a real check.
 
 8 of 8 confirmed red (404, no route yet) before commit — verified with
 real Plaid Sandbox credentials (not just structurally; the 5
@@ -473,14 +479,19 @@ server-side logging of the swallowed exception in `sync()`.
   duplicates. No backfill migration: the hook runs for every credit
   account on every sync. Depository/loan accounts get nothing.
   `tests/test_plaid_sync.py` +2. Budget math in `spec/budget-api.md`.
-- 022 (2026-08-28) — contract landed: manual-transaction adoption. Before
-  `_upsert_transaction` inserts a new row it tries to adopt an unlinked
-  manual row on the same account (exact negated amount, `posted_at` within
-  7 days, `difflib` description similarity `>= 0.80` with no substring
-  shortcut, never the `"Starting Balance"` sentinel; closest date wins
-  ties). Adoption stamps `plaid_transaction_id` and overwrites the
-  Plaid-owned fields only — `category_id` / `is_income` survive,
-  `infer_category_id` is skipped. New `transactions_linked` counter in
-  `_EMPTY_COUNTERS`, per-item results, and `totals`. No migration
-  (`plaid_transaction_id` already nullable). See § Manual-transaction
-  adoption and `changes/022-link-manual-on-sync/plan.md`. Not yet built.
+- 022 (2026-08-28) — manual-transaction adoption. Before
+  `_upsert_transaction` inserts a new row it calls
+  `_adopt_manual_transaction` to find an unlinked manual row on the same
+  account (exact negated amount, `posted_at` within 7 days,
+  `api_helpers.description_similarity` `>= DESCRIPTION_MATCH_THRESHOLD`
+  (0.80) with no substring shortcut, never the `"Starting Balance"`
+  sentinel; nearest date then strongest match then lowest id wins).
+  Adoption stamps `plaid_transaction_id` and overwrites the Plaid-owned
+  fields only — `category_id` / `is_income` survive, `infer_category_id` is
+  skipped. `_upsert_transaction` returns `"linked"`; both `_sync_one_item`
+  loops route that to `transactions_linked` (already in `_EMPTY_COUNTERS`,
+  so per-item results, `totals`, and the mutation-restart reset carry it).
+  No migration (`plaid_transaction_id` already nullable).
+  `tests/test_plaid_sync.py` +8, `tests/test_api_helpers.py` (new) +6.
+  Full suite 259 passed / 6 skipped. See § Manual-transaction adoption and
+  `changes/022-link-manual-on-sync/plan.md`.

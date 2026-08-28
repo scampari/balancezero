@@ -857,7 +857,9 @@ def test_sync_adopts_a_matching_manual_row_and_is_idempotent_on_resync(
     # already filed to a category.
     item, account = _seed_item_and_account(test_user)
     category = client.post("/api/categories", json={"name": "Coffee"}, headers=auth_headers).get_json()
-    manual = _seed_manual_txn(account, "-12.00", "2026-08-17", "Blue Bottle", category_id=category["id"])
+    manual = _seed_manual_txn(
+        account, "-12.00", "2026-08-17", "BLUE BOTTLE COFFEE 0123", category_id=category["id"]
+    )
     manual_id = manual.id
     posted = _added("plaid-1", 12.0, "2026-08-20", "SQ *BLUE BOTTLE COFFEE 0123")
 
