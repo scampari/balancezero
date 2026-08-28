@@ -7,3 +7,7 @@ instance/
 cookies*.txt
 *.db
 .DS_Store
+
+# Playwright (root config run)
+/test-results/
+/playwright-report/

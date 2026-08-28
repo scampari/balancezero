@@ -84,6 +84,8 @@ test.describe('budget page — management', () => {
 
   test('reordering moves a top-level category', async ({ page }) => {
     await login(page)
+    // Wait for the budget list to render before snapshotting order.
+    await expect(row(page, 'Food')).toBeVisible()
     const before = await topLevelNames(page)
     expect(before.length).toBeGreaterThan(1)
 

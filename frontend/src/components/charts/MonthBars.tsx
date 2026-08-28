@@ -1,4 +1,4 @@
-import { niceMax, shortMonth, formatMoney } from './chartScale'
+import { niceMax, formatMoney } from './chartScale'
 
 export interface BarSeries {
   label: string
@@ -6,6 +6,8 @@ export interface BarSeries {
   // Which token to draw with; the bars use `currentColor`.
   tone: 'accent' | 'negative' | 'muted'
 }
+
+const identity = (key: string) => key
 
 const TONE_CLASS: Record<BarSeries['tone'], string> = {
   accent: 'text-(--color-accent)',
@@ -21,10 +23,12 @@ export function MonthBars({
   months,
   series,
   height = 170,
+  formatLabel = identity,
 }: {
   months: string[]
   series: BarSeries[]
   height?: number
+  formatLabel?: (key: string) => string
 }) {
   const width = Math.max(320, months.length * 56)
   const padBottom = 22
@@ -59,7 +63,7 @@ export function MonthBars({
                 return (
                   <g key={s.label} className={TONE_CLASS[s.tone]}>
                     <title>
-                      {shortMonth(month)} · {s.label}: {formatMoney(value)}
+                      {formatLabel(month)} · {s.label}: {formatMoney(value)}
                     </title>
                     <rect
                       x={x}
@@ -78,7 +82,7 @@ export function MonthBars({
                 textAnchor="middle"
                 className="fill-(--color-text-muted) text-[10px]"
               >
-                {shortMonth(month)}
+                {formatLabel(month)}
               </text>
             </g>
           )

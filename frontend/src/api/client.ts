@@ -327,23 +327,25 @@ export async function getPlaidStatus(accessToken: string): Promise<{ items: Plai
   return res.json()
 }
 
+export type ReportGrain = 'week' | 'month' | 'quarter' | 'year'
+
 export interface SpendingByCategory {
   category_id: number | null
   category: string
   parent_id: number | null
   total: string
-  by_month: { month: string; amount: string }[]
+  by_bucket: { bucket: string; amount: string }[]
 }
 
-export interface IncomeVsExpenseMonth {
-  month: string
+export interface IncomeVsExpenseBucket {
+  bucket: string
   income: string
   expense: string
   net: string
 }
 
-export interface MonthOverMonth {
-  month: string
+export interface PeriodOverPeriod {
+  bucket: string
   total: string
   change: string | null
   change_pct: string | null
@@ -355,20 +357,44 @@ export interface TopMerchant {
   count: number
 }
 
+export interface ReportFilters {
+  accounts: number[]
+  categories: number[]
+  grain: ReportGrain
+  exclude_transfers: boolean
+}
+
 export interface ReportsResponse {
   from: string
   to: string
-  months: string[]
+  grain: ReportGrain
+  buckets: string[]
+  filters: ReportFilters
   spending_by_category: SpendingByCategory[]
-  income_vs_expense: IncomeVsExpenseMonth[]
-  month_over_month_spend: MonthOverMonth[]
+  income_vs_expense: IncomeVsExpenseBucket[]
+  // Period-over-period spend — key kept for API back-compat; rows carry `bucket`.
+  month_over_month_spend: PeriodOverPeriod[]
   top_merchants: TopMerchant[]
 }
 
-export async function getReports(accessToken: string, from?: string, to?: string): Promise<ReportsResponse> {
+export interface GetReportsOptions {
+  from?: string
+  to?: string
+  accounts?: number[]
+  categories?: number[]
+  grain?: ReportGrain
+  excludeTransfers?: boolean
+}
+
+export async function getReports(accessToken: string, opts: GetReportsOptions = {}): Promise<ReportsResponse> {
   const params = new URLSearchParams()
-  if (from) params.set('from', from)
-  if (to) params.set('to', to)
+  if (opts.from) params.set('from', opts.from)
+  if (opts.to) params.set('to', opts.to)
+  if (opts.accounts && opts.accounts.length > 0) params.set('accounts', opts.accounts.join(','))
+  if (opts.categories && opts.categories.length > 0) params.set('categories', opts.categories.join(','))
+  if (opts.grain) params.set('grain', opts.grain)
+  // Default is exclude; only send the param when overriding to include.
+  if (opts.excludeTransfers === false) params.set('exclude_transfers', 'false')
   const qs = params.toString()
   const res = await request(`/reports${qs ? `?${qs}` : ''}`, { method: 'GET' }, accessToken)
   await throwIfError(res)
@@ -591,8 +617,7 @@ export function removePlaidItemWithAutoRefresh(
 export function getReportsWithAutoRefresh(
   accessToken: string,
   onTokenRefreshed: (token: string) => void,
-  from?: string,
-  to?: string,
+  opts: GetReportsOptions = {},
 ): Promise<ReportsResponse> {
-  return withAutoRefresh((token) => getReports(token, from, to), accessToken, onTokenRefreshed)
+  return withAutoRefresh((token) => getReports(token, opts), accessToken, onTokenRefreshed)
 }
