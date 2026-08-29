@@ -1,0 +1,106 @@
+# Single-host production deployment for BalanceZero.
+#
+# Three app containers (Postgres, gunicorn backend, nginx + built SPA) plus a
+# dedicated Tailscale node that publishes the app at
+#   https://balancezero.<tailnet>.ts.net
+# on the tailnet only -- automatic HTTPS, no host ports published, nothing
+# reachable from the public internet.
+#
+# This is the docker-compose equivalent of deploy/k8s/*.yaml. Same images
+# (deploy/Dockerfile.backend / Dockerfile.frontend), same single-hostname
+# same-origin topology (nginx proxies /api to the backend; see
+# deploy/nginx.conf), same "migrations run before the app" step the k8s
+# initContainer does.
+#
+# Runbook: deploy/compose/README.md
+#
+#   cd deploy/compose
+#   cp .env.prod.example .env.prod            # then fill it in
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+
+name: balancezero
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: balancezero
+      POSTGRES_DB: balancezero
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      # Keep data under a subdir of the mount -- postgres refuses to init
+      # into a volume root that contains lost+found.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U balancezero"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env.prod}
+      DATABASE_URL: postgresql://balancezero:${POSTGRES_PASSWORD}@db:5432/balancezero
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID:?set PLAID_CLIENT_ID in .env.prod}
+      PLAID_SECRET: ${PLAID_SECRET:?set PLAID_SECRET in .env.prod}
+      PLAID_ENV: ${PLAID_ENV:-production}
+      PLAID_ENCRYPTION_KEY: ${PLAID_ENCRYPTION_KEY:?set PLAID_ENCRYPTION_KEY in .env.prod}
+      # OAuth institutions redirect the browser back here mid-Link. Must
+      # exactly match an "Allowed redirect URI" in the Plaid dashboard.
+      PLAID_REDIRECT_URI: ${PUBLIC_ORIGIN}/accounts
+      ALLOWED_ORIGIN: ${PUBLIC_ORIGIN}
+      FLASK_DEBUG: "0"
+      # Reverse-proxy hops in front of Flask: tailscale serve (1) + nginx
+      # (1). Lets the login/signup rate limiter key on the real tailnet
+      # client IP. Verify after first deploy (see README "Verify").
+      TRUSTED_PROXY_COUNT: "2"
+    # Apply migrations, then hand off to gunicorn -- mirrors the k8s
+    # migrate initContainer. `flask db upgrade` no-ops when already current.
+    command: sh -c "flask db upgrade && exec gunicorn --bind 0.0.0.0:5002 --workers 2 app:app"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5002/api/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Dedicated tailnet node for the app. Joins as its own device named
+  # "balancezero", so MagicDNS gives balancezero.<tailnet>.ts.net, and
+  # `tailscale serve` terminates HTTPS and proxies to the nginx container.
+  tailscale:
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    hostname: balancezero
+    depends_on:
+      - frontend
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?generate a reusable auth key in the Tailscale admin console}
+      TS_HOSTNAME: balancezero
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+
+volumes:
+  db-data:
+  tailscale-state:

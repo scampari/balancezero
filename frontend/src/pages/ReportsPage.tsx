@@ -240,7 +240,7 @@ export function ReportsPage() {
           <summary className="cursor-pointer list-none rounded-md border border-(--color-border) px-2.5 py-1 text-(--color-text-muted) hover:bg-(--color-surface-hover)">
             Accounts{accountIds.length > 0 ? ` (${accountIds.length})` : ''}
           </summary>
-          <div className="absolute z-10 mt-1 max-h-72 w-56 overflow-y-auto rounded-md border border-(--color-border) bg-(--color-surface) p-2 shadow-lg">
+          <div className="absolute right-0 z-10 mt-1 max-h-72 w-[min(14rem,calc(100vw-2rem))] overflow-y-auto rounded-md border border-(--color-border) bg-(--color-surface) p-2 shadow-lg sm:w-56">
             {accountGroups.length === 0 && <p className="px-1 text-xs text-(--color-text-faint)">No accounts</p>}
             {accountGroups.map((group) => (
               <div key={group.name} className="mb-1.5">
@@ -266,7 +266,7 @@ export function ReportsPage() {
           <summary className="cursor-pointer list-none rounded-md border border-(--color-border) px-2.5 py-1 text-(--color-text-muted) hover:bg-(--color-surface-hover)">
             Categories{categoryIds.length > 0 ? ` (${categoryIds.length})` : ''}
           </summary>
-          <div className="absolute z-10 mt-1 max-h-72 w-56 overflow-y-auto rounded-md border border-(--color-border) bg-(--color-surface) p-2 shadow-lg">
+          <div className="absolute right-0 z-10 mt-1 max-h-72 w-[min(14rem,calc(100vw-2rem))] overflow-y-auto rounded-md border border-(--color-border) bg-(--color-surface) p-2 shadow-lg sm:w-56">
             {filterableCategories.length === 0 && (
               <p className="px-1 text-xs text-(--color-text-faint)">No categories</p>
             )}
@@ -331,8 +331,9 @@ export function ReportsPage() {
         </Panel>
 
         <Panel title="Period over period">
-          <table className="w-full text-sm">
-            <tbody className="divide-y divide-(--color-border)">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[22rem] text-sm">
+              <tbody className="divide-y divide-(--color-border)">
               {report.month_over_month_spend.map((row) => (
                 <tr key={row.bucket}>
                   <td className="py-1.5 text-(--color-text-muted)">{label(row.bucket)}</td>
@@ -357,6 +358,7 @@ export function ReportsPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </Panel>
 
         <Panel title="Top categories">

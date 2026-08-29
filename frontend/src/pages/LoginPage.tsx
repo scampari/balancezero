@@ -28,7 +28,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-svh items-center justify-center bg-(--color-bg) px-6">
+    <div className="flex min-h-svh items-center justify-center bg-(--color-bg) px-4 py-8 sm:px-6">
       <div className="w-full max-w-sm">
         <h1 className="mb-1 text-2xl font-semibold tracking-tight text-(--color-text)">BalanceZero</h1>
         <p className="mb-8 text-sm text-(--color-text-muted)">Zero-based budgeting, built to know where every dollar went.</p>

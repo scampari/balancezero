@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useState, type SyntheticEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   type Budget,
@@ -17,6 +17,15 @@ type Category = Budget['categories'][number]
 
 function formatMoney(value: string): string {
   return Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+}
+
+// Zero-based budgeting lives or dies by the "available" column, so it's the
+// one that's color-coded: money left to spend (accent), overspent
+// (negative), or spent to the dollar (faint).
+function availableColor(value: number): string {
+  if (value < 0) return 'text-(--color-negative)'
+  if (value === 0) return 'text-(--color-text-faint)'
+  return 'text-(--color-accent)'
 }
 
 const CURRENT_MONTH = new Date().toISOString().slice(0, 7) + '-01'
@@ -40,17 +49,41 @@ function writeCollapsed(ids: Set<number>): void {
   }
 }
 
-const NUM_CELL = 'w-28 shrink-0 text-right tabular-nums text-sm'
-const HEAD_CELL = 'w-28 shrink-0 text-right text-xs font-medium tracking-wide text-(--color-text-muted) uppercase'
+// Full-width in the mobile stat grid; fixed column on desktop (>= sm).
+// Centered so each figure sits directly under its header.
+const NUM_CELL = 'w-full text-center tabular-nums text-sm sm:w-28 sm:shrink-0'
+const HEAD_CELL = 'w-28 shrink-0 text-center text-xs font-medium tracking-wide text-(--color-text-muted) uppercase'
+const STAT_LABEL = 'text-center text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase sm:hidden'
 const MINI_BTN =
   'rounded px-1.5 py-0.5 text-xs text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text-muted) disabled:cursor-not-allowed disabled:opacity-40'
+// A pill inside a category row's expanded ⋮ actions panel.
+const MENU_ITEM =
+  'rounded border border-(--color-border) bg-(--color-surface) px-2 py-1 text-xs text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text) disabled:cursor-not-allowed disabled:opacity-40'
+
+// The ⋮ menu is a plain <details>; collapse it after an action fires.
+function closeRowMenu(event: SyntheticEvent): void {
+  event.currentTarget.closest('details')?.removeAttribute('open')
+}
+
+// The category row's <summary> spans the whole row, so clicks on its
+// interactive bits (name, rename/assign inputs, collapse caret) would also
+// toggle the actions panel. Swallow the summary's default toggle for those;
+// only a click on the ⋮ itself opens the panel.
+function noToggle(event: SyntheticEvent): void {
+  event.preventDefault()
+}
+
+const KEBAB_BASE =
+  'h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-base leading-none text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text) group-open:bg-(--color-surface-hover) group-open:text-(--color-text)'
 
 export function BudgetPage() {
   const { accessToken, setAccessToken, isAuthChecked } = useAuth()
   const navigate = useNavigate()
   const [budget, setBudget] = useState<Budget | null>(null)
-  const [newCategoryName, setNewCategoryName] = useState('')
-  const [newCategoryParent, setNewCategoryParent] = useState('')
+  // false = not adding; null = adding a top-level category; number = adding a
+  // subcategory under that parent id.
+  const [addingUnder, setAddingUnder] = useState<number | null | false>(false)
+  const [newCatDraft, setNewCatDraft] = useState('')
   const [isCreatingCategory, setIsCreatingCategory] = useState(false)
   const [categoryError, setCategoryError] = useState<string | null>(null)
   const [manageError, setManageError] = useState<string | null>(null)
@@ -136,26 +169,65 @@ export function BudgetPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken, isAuthChecked, navigate, setAccessToken])
 
-  async function handleCreateCategory(event: FormEvent) {
-    event.preventDefault()
-    if (!accessToken || !newCategoryName.trim()) return
+  function openNewCategory(parentId: number | null) {
+    setNewCatDraft('')
+    setCategoryError(null)
+    setAddingUnder(parentId)
+  }
+
+  function cancelNewCategory() {
+    setNewCatDraft('')
+    setCategoryError(null)
+    setAddingUnder(false)
+  }
+
+  async function submitNewCategory(parentId: number | null) {
+    const name = newCatDraft.trim()
+    if (!accessToken || !name) return
     setCategoryError(null)
     setIsCreatingCategory(true)
     try {
-      await createCategoryWithAutoRefresh(
-        accessToken,
-        setAccessToken,
-        newCategoryName.trim(),
-        newCategoryParent === '' ? null : Number(newCategoryParent),
-      )
-      setNewCategoryName('')
-      setNewCategoryParent('')
+      await createCategoryWithAutoRefresh(accessToken, setAccessToken, name, parentId)
+      setNewCatDraft('')
+      setAddingUnder(false)
       await loadBudget(accessToken)
     } catch (err) {
       setCategoryError(err instanceof Error ? err.message : 'Could not create category.')
     } finally {
       setIsCreatingCategory(false)
     }
+  }
+
+  function renderNewCategoryRow(parentId: number | null) {
+    const isChild = parentId != null
+    return (
+      <li key={`new-${parentId ?? 'root'}`} className="bg-(--color-surface) py-2 pr-4 pl-4">
+        <input
+          autoFocus
+          aria-label={isChild ? 'New subcategory name' : 'New category name'}
+          placeholder={isChild ? 'New subcategory…' : 'New category…'}
+          value={newCatDraft}
+          disabled={isCreatingCategory}
+          onChange={(e) => setNewCatDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              void submitNewCategory(parentId)
+            }
+            if (e.key === 'Escape') cancelNewCategory()
+          }}
+          onBlur={() => {
+            if (!newCatDraft.trim()) cancelNewCategory()
+          }}
+          className="w-full rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-sm text-(--color-text) outline-none transition-colors placeholder:text-(--color-text-faint) focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+        />
+        {categoryError && (
+          <p role="alert" className="mt-1 text-xs text-(--color-negative)">
+            {categoryError}
+          </p>
+        )}
+      </li>
+    )
   }
 
   async function handleAllocationCommit(categoryId: number) {
@@ -250,122 +322,189 @@ export function BudgetPage() {
       <li
         key={category.id}
         data-category={category.name}
-        className={`flex flex-col gap-2 bg-(--color-surface) py-3 pr-4 transition-colors hover:bg-(--color-surface-hover) ${
-          isChild ? 'pl-10' : 'pl-4'
-        }`}
+        className="flex flex-col gap-1 bg-(--color-surface) px-4 py-3 transition-colors hover:bg-(--color-surface-hover)"
       >
-        <div className="flex items-center gap-4">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
-            {category.is_group && (
-              <button
-                type="button"
-                aria-label={`${collapsed.has(category.id) ? 'Expand' : 'Collapse'} ${category.name}`}
-                onClick={() => toggleCollapse(category.id)}
-                className="shrink-0 text-xs text-(--color-text-faint) transition-colors hover:text-(--color-text)"
-              >
-                {collapsed.has(category.id) ? '▸' : '▾'}
-              </button>
-            )}
-            {isChild && <span className="text-(--color-text-faint)">↳</span>}
-            {renamingId === category.id ? (
-              <input
-                autoFocus
-                aria-label={`Rename ${category.name}`}
-                value={renameDraft}
-                onChange={(e) => setRenameDraft(e.target.value)}
-                onBlur={() => commitRename(category.id)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.currentTarget.blur()
-                  if (e.key === 'Escape') setRenamingId(null)
-                }}
-                className="min-w-0 flex-1 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-0.5 text-sm text-(--color-text) outline-none focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
-              />
-            ) : (
-              <span
-                className={`truncate text-sm ${
-                  isChild
-                    ? 'text-(--color-text-muted)'
-                    : category.is_group
-                      ? 'font-medium text-(--color-text)'
-                      : 'text-(--color-text)'
-                }`}
-              >
-                {category.name}
-              </span>
-            )}
-          </div>
-          <span
-            className={`${NUM_CELL} ${
-              Number(category.spent_this_month) < 0 ? 'text-(--color-text)' : 'text-(--color-text-faint)'
-            }`}
-          >
-            {formatMoney(category.spent_this_month)}
-          </span>
-          <span
-            className={`${NUM_CELL} font-medium ${
-              available < 0 ? 'text-(--color-negative)' : 'text-(--color-text)'
-            }`}
-          >
-            {formatMoney(category.available)}
-          </span>
-          {category.is_group ? (
-            <span className={`${NUM_CELL} font-medium text-(--color-text-muted)`}>
-              {formatMoney(category.allocated_this_month)}
-            </span>
-          ) : (
-            <label className="flex w-28 shrink-0 items-center justify-end gap-1.5">
-              <span className="text-xs text-(--color-text-faint)">$</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                aria-label={`Assign amount for ${category.name}`}
-                value={draft ?? category.allocated_this_month}
-                onChange={(event) =>
-                  setAllocationDrafts((prev) => ({ ...prev, [category.id]: event.target.value }))
-                }
-                onBlur={() => handleAllocationCommit(category.id)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') event.currentTarget.blur()
-                }}
-                className="tabular-nums w-20 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-right text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
-              />
-            </label>
-          )}
-        </div>
+        {/* The whole row is the <summary>: name + centered stats + a ⋮ that
+            reveals the actions panel. Clicks on the name / inputs are
+            swallowed by noToggle so only the ⋮ opens the panel. */}
+        <details className="group">
+          <summary className="flex list-none flex-col gap-1 [&::-webkit-details-marker]:hidden">
+           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+            <div className="flex min-w-0 items-center gap-1.5 sm:flex-1">
+              <div className="flex min-w-0 flex-1 items-center gap-1.5" onClick={noToggle}>
+                {category.is_group && (
+                  <button
+                    type="button"
+                    aria-label={`${collapsed.has(category.id) ? 'Expand' : 'Collapse'} ${category.name}`}
+                    onClick={() => toggleCollapse(category.id)}
+                    className="shrink-0 text-xs text-(--color-text-faint) transition-colors hover:text-(--color-text)"
+                  >
+                    {collapsed.has(category.id) ? '▸' : '▾'}
+                  </button>
+                )}
+                {renamingId === category.id ? (
+                  <input
+                    autoFocus
+                    aria-label={`Rename ${category.name}`}
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onBlur={() => commitRename(category.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur()
+                      if (e.key === 'Escape') setRenamingId(null)
+                    }}
+                    className="min-w-0 flex-1 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-0.5 text-sm text-(--color-text) outline-none focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                  />
+                ) : (
+                  <span
+                    className={`truncate text-sm ${
+                      isChild
+                        ? 'text-(--color-text-muted)'
+                        : category.is_group
+                          ? 'font-medium text-(--color-text)'
+                          : 'text-(--color-text)'
+                    }`}
+                  >
+                    {category.name}
+                  </span>
+                )}
+                {parentChoices.some((p) => p.id === category.id) && (
+                  <button
+                    type="button"
+                    aria-label={`Add subcategory under ${category.name}`}
+                    onClick={() => openNewCategory(category.id)}
+                    className="shrink-0 rounded px-1 text-base leading-none text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text)"
+                  >
+                    +
+                  </button>
+                )}
+              </div>
+              {/* mobile: ⋮ rides the name row, top-right of the card */}
+              <span aria-hidden className={`${KEBAB_BASE} flex sm:hidden`}>⋮</span>
+            </div>
 
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          {isPayment ? paymentLine(category) : targetLine(category)}
-          <div className="ml-auto flex items-center gap-1.5">
+            {/* Stats: a labeled 3-up grid on mobile; three fixed centered
+                columns on desktop (wrappers collapse via display:contents). */}
+            <div className="grid grid-cols-3 gap-2 sm:contents" onClick={noToggle}>
+              <div className="flex flex-col gap-0.5 sm:contents">
+                <span className={STAT_LABEL}>Spent</span>
+                <span
+                  className={`${NUM_CELL} ${
+                    Number(category.spent_this_month) < 0 ? 'text-(--color-text)' : 'text-(--color-text-faint)'
+                  }`}
+                >
+                  {formatMoney(category.spent_this_month)}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5 sm:contents">
+                <span className={STAT_LABEL}>Available</span>
+                <span className={`${NUM_CELL} font-medium ${availableColor(available)}`}>
+                  {formatMoney(category.available)}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5 sm:contents">
+                <span className={STAT_LABEL}>{category.is_group ? 'Budgeted' : 'Assign'}</span>
+                {category.is_group ? (
+                  <span className={`${NUM_CELL} font-medium text-(--color-text-muted)`}>
+                    {formatMoney(category.allocated_this_month)}
+                  </span>
+                ) : (
+                  <label className="flex items-center justify-center gap-1.5 sm:w-28 sm:shrink-0">
+                    <span className="text-xs text-(--color-text-faint)">$</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      aria-label={`Assign amount for ${category.name}`}
+                      value={draft ?? category.allocated_this_month}
+                      onChange={(event) =>
+                        setAllocationDrafts((prev) => ({ ...prev, [category.id]: event.target.value }))
+                      }
+                      onBlur={() => handleAllocationCommit(category.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') event.currentTarget.blur()
+                      }}
+                      className="tabular-nums w-full min-w-0 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-center text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg) sm:w-20"
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+
+            {/* desktop: ⋮ centered at the right of the row */}
+            <span aria-hidden className={`${KEBAB_BASE} hidden shrink-0 sm:flex`}>⋮</span>
+           </div>
+
+            {/* meta line stays visible at rest (target progress / card
+                payment status); only the actions below it are disclosed */}
+            {(isPayment || category.target) && (
+              <div className="min-w-0" onClick={noToggle}>
+                {isPayment ? paymentLine(category) : targetLine(category)}
+              </div>
+            )}
+          </summary>
+
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 rounded-md border border-(--color-border) bg-(--color-bg) p-1.5">
             {!category.is_group && !isPayment && (
               <button
                 type="button"
-                onClick={() =>
-                  targetEditorFor === category.id ? setTargetEditorFor(null) : openTargetEditor(category)
-                }
-                className={MINI_BTN}
+                onClick={(e) => {
+                  closeRowMenu(e)
+                  if (targetEditorFor === category.id) setTargetEditorFor(null)
+                  else openTargetEditor(category)
+                }}
+                className={MENU_ITEM}
               >
                 {category.target ? 'Edit target' : 'Set target'}
               </button>
             )}
             {!isPayment && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRenameDraft(category.name)
-                    setRenamingId(category.id)
-                  }}
-                  className={MINI_BTN}
-                >
-                  Rename
-                </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  closeRowMenu(e)
+                  setRenameDraft(category.name)
+                  setRenamingId(category.id)
+                }}
+                className={MENU_ITEM}
+              >
+                Rename
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={idx <= 0}
+              onClick={(e) => {
+                closeRowMenu(e)
+                applyPatch(category.id, { position: idx - 1 })
+              }}
+              className={MENU_ITEM}
+            >
+              Move up
+            </button>
+            <button
+              type="button"
+              disabled={idx < 0 || idx >= siblings.length - 1}
+              onClick={(e) => {
+                closeRowMenu(e)
+                applyPatch(category.id, { position: idx + 1 })
+              }}
+              className={MENU_ITEM}
+            >
+              Move down
+            </button>
+            {!isPayment && (
+              <label className="flex items-center gap-1 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase">
+                <span className="sr-only sm:not-sr-only">Move to</span>
                 <select
                   aria-label={`Move ${category.name}`}
                   value={category.parent_id ?? ''}
-                  onChange={(e) =>
-                    applyPatch(category.id, { parent_id: e.target.value === '' ? null : Number(e.target.value) })
-                  }
-                  className={`${MINI_BTN} appearance-none pr-1`}
+                  onChange={(e) => {
+                    closeRowMenu(e)
+                    applyPatch(category.id, {
+                      parent_id: e.target.value === '' ? null : Number(e.target.value),
+                    })
+                  }}
+                  className="rounded border border-(--color-border) bg-(--color-bg) px-1.5 py-1 text-xs font-normal normal-case text-(--color-text) outline-none focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
                 >
                   <option value="">Top level</option>
                   {moveTargets
@@ -376,37 +515,22 @@ export function BudgetPage() {
                       </option>
                     ))}
                 </select>
-              </>
+              </label>
             )}
-            <button
-              type="button"
-              aria-label={`Move ${category.name} up`}
-              disabled={idx <= 0}
-              onClick={() => applyPatch(category.id, { position: idx - 1 })}
-              className={MINI_BTN}
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              aria-label={`Move ${category.name} down`}
-              disabled={idx < 0 || idx >= siblings.length - 1}
-              onClick={() => applyPatch(category.id, { position: idx + 1 })}
-              className={MINI_BTN}
-            >
-              ↓
-            </button>
             {!isPayment && (
               <button
                 type="button"
-                onClick={() => applyPatch(category.id, { archived: true })}
-                className={MINI_BTN}
+                onClick={(e) => {
+                  closeRowMenu(e)
+                  applyPatch(category.id, { archived: true })
+                }}
+                className={`${MENU_ITEM} hover:text-(--color-negative)`}
               >
                 Archive
               </button>
             )}
           </div>
-        </div>
+        </details>
 
         {targetEditorFor === category.id && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-(--color-border) bg-(--color-bg) p-2">
@@ -448,6 +572,13 @@ export function BudgetPage() {
             >
               Save
             </button>
+            <button
+              type="button"
+              onClick={() => setTargetEditorFor(null)}
+              className="rounded-md px-2 py-1 text-xs text-(--color-text-faint) transition-colors hover:text-(--color-text-muted)"
+            >
+              Cancel
+            </button>
             {targetError && (
               <span role="alert" className="text-xs text-(--color-negative)">
                 {targetError}
@@ -461,11 +592,11 @@ export function BudgetPage() {
 
   return (
     <AppShell>
-      <div className="mb-8 rounded-xl border border-(--color-border) bg-(--color-surface) p-6">
+      <div className="mb-6 rounded-xl border border-(--color-border) bg-(--color-surface) p-5 sm:mb-8 sm:p-6">
         <p className="text-xs font-medium text-(--color-text-muted)">Ready to Assign</p>
         <p
           data-testid="ready-to-assign"
-          className={`tabular-nums mt-1 text-4xl font-semibold tracking-tight ${
+          className={`tabular-nums mt-1 text-3xl font-semibold tracking-tight sm:text-4xl ${
             readyToAssign < 0 ? 'text-(--color-negative)' : 'text-(--color-accent)'
           }`}
         >
@@ -475,27 +606,43 @@ export function BudgetPage() {
 
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-medium text-(--color-text-muted)">Categories</h2>
+        <button
+          type="button"
+          onClick={() => openNewCategory(null)}
+          className="flex items-center gap-1 rounded-md border border-(--color-border) px-2 py-1 text-xs font-medium text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text)"
+        >
+          <span aria-hidden className="text-sm leading-none">+</span> Category
+        </button>
       </div>
 
       <div className="overflow-hidden rounded-xl border border-(--color-border)">
         {budget.categories.length === 0 ? (
-          <p className="px-4 py-6 text-center text-sm text-(--color-text-faint)">No categories yet.</p>
+          addingUnder === null ? (
+            <ul>{renderNewCategoryRow(null)}</ul>
+          ) : (
+            <p className="px-4 py-6 text-center text-sm text-(--color-text-faint)">No categories yet.</p>
+          )
         ) : (
           <>
-            <div className="flex items-center gap-4 border-b border-(--color-border) bg-(--color-surface) px-4 py-2">
+            {/* Column header — desktop only; the mobile cards label their own stats. */}
+            <div className="hidden items-center gap-4 border-b border-(--color-border) bg-(--color-surface) px-4 py-2 sm:flex">
               <span className="flex-1 text-xs font-medium tracking-wide text-(--color-text-muted) uppercase">
                 Category
               </span>
               <span className={HEAD_CELL}>Spent</span>
-              <span className={HEAD_CELL}>Available to Spend</span>
+              <span className={HEAD_CELL}>Available</span>
               <span className={HEAD_CELL}>Budgeted</span>
+              {/* aligns the header cells with the rows, which carry a ⋮ here */}
+              <span aria-hidden className="w-7 shrink-0" />
             </div>
             <ul className="divide-y divide-(--color-border)">
+              {addingUnder === null && renderNewCategoryRow(null)}
               {topLevel.map((parent) => {
                 const kids = childrenOf(parent.id)
                 const hideKids = parent.is_group && collapsed.has(parent.id)
                 return [
                   renderCategoryRow(parent, false, topLevel),
+                  ...(addingUnder === parent.id ? [renderNewCategoryRow(parent.id)] : []),
                   ...(hideKids ? [] : kids.map((child) => renderCategoryRow(child, true, kids))),
                 ]
               })}
@@ -503,68 +650,44 @@ export function BudgetPage() {
             </ul>
             <div
               data-testid="budget-totals"
-              className="flex items-center gap-4 border-t-2 border-(--color-border) bg-(--color-surface) px-4 py-2.5"
+              className="flex flex-col gap-2 border-t-2 border-(--color-border) bg-(--color-surface) px-4 py-2.5 sm:flex-row sm:items-center sm:gap-4"
             >
-              <span className="flex-1 text-xs font-semibold tracking-wide text-(--color-text-muted) uppercase">
+              <span className="text-xs font-semibold tracking-wide text-(--color-text-muted) uppercase sm:flex-1">
                 Total
               </span>
-              <span className={`${NUM_CELL} font-semibold text-(--color-text)`}>
-                {formatMoney(budget.totals.spent)}
-              </span>
-              <span className={`${NUM_CELL} font-semibold text-(--color-text)`}>
-                {formatMoney(budget.totals.available)}
-              </span>
-              <span className="flex w-28 shrink-0 items-center justify-end pr-2">
-                <span className="tabular-nums text-sm font-semibold text-(--color-text)">
-                  {formatMoney(budget.totals.budgeted)}
-                </span>
-              </span>
+              <div className="grid grid-cols-3 gap-2 sm:contents">
+                <div className="flex flex-col gap-0.5 sm:contents">
+                  <span className={STAT_LABEL}>Spent</span>
+                  <span className={`${NUM_CELL} font-semibold text-(--color-text)`}>
+                    {formatMoney(budget.totals.spent)}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-0.5 sm:contents">
+                  <span className={STAT_LABEL}>Available</span>
+                  <span
+                    className={`${NUM_CELL} font-semibold ${availableColor(Number(budget.totals.available))}`}
+                  >
+                    {formatMoney(budget.totals.available)}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-0.5 sm:contents">
+                  <span className={STAT_LABEL}>Budgeted</span>
+                  <span className="flex items-center justify-center tabular-nums text-sm font-semibold text-(--color-text) sm:w-28 sm:shrink-0">
+                    {formatMoney(budget.totals.budgeted)}
+                  </span>
+                </div>
+              </div>
+              {/* matches the ⋮ gutter on the rows above */}
+              <span aria-hidden className="hidden w-7 shrink-0 sm:block" />
             </div>
           </>
         )}
 
-        <form
-          onSubmit={handleCreateCategory}
-          className="flex flex-wrap items-center gap-2 border-t border-(--color-border) bg-(--color-surface) px-4 py-3"
-        >
-          <input
-            type="text"
-            value={newCategoryName}
-            onChange={(event) => setNewCategoryName(event.target.value)}
-            placeholder="New category name"
-            className="flex-1 rounded-md border border-(--color-border) bg-(--color-bg) px-2.5 py-1.5 text-sm text-(--color-text) outline-none transition-colors placeholder:text-(--color-text-faint) focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
-          />
-          <select
-            aria-label="Parent category"
-            value={newCategoryParent}
-            onChange={(event) => setNewCategoryParent(event.target.value)}
-            className="rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1.5 text-sm text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
-          >
-            <option value="">Top-level category</option>
-            {parentChoices.map((parent) => (
-              <option key={parent.id} value={parent.id}>
-                Subcategory of {parent.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="submit"
-            disabled={isCreatingCategory || !newCategoryName.trim()}
-            className="rounded-md bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Add
-          </button>
-        </form>
       </div>
 
       {manageError && (
         <p role="alert" className="mt-2 text-sm text-(--color-negative)">
           {manageError}
-        </p>
-      )}
-      {categoryError && (
-        <p role="alert" className="mt-2 text-sm text-(--color-negative)">
-          {categoryError}
         </p>
       )}
 
@@ -583,7 +706,7 @@ export function BudgetPage() {
                 <span className="flex-1 truncate text-sm text-(--color-text-muted)">
                   {category.name}
                 </span>
-                <span className={`${NUM_CELL} text-(--color-text-faint)`}>
+                <span className="shrink-0 text-right tabular-nums text-sm text-(--color-text-faint) sm:w-28">
                   {formatMoney(category.available)}
                 </span>
                 <button

@@ -10,6 +10,7 @@ from plaid.model.country_code import CountryCode
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_create_request_update import LinkTokenCreateRequestUpdate
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.products import Products
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
@@ -88,15 +89,12 @@ def _item_summary(item):
     }
 
 
-@plaid_bp.route("/link-token", methods=["POST"])
-@jwt_required()
-def create_link_token():
-    user = _load_non_demo_user()
-    if user is None:
-        return jsonify({"error": "the demo account cannot connect a real bank"}), 403
-
-    link_token_args = dict(
-        products=[Products("transactions")],
+def _base_link_token_args(user):
+    """The `/link/token/create` fields common to a first-time link and an
+    update-mode re-open: identity, app name, locale, and the dashboard
+    redirect URI when one is configured. Callers add `products` (first link)
+    or `access_token` + `update` (update mode)."""
+    args = dict(
         client_name="BalanceZero",
         country_codes=[CountryCode("US")],
         language="en",
@@ -107,20 +105,63 @@ def create_link_token():
     # unset/misconfigured value must not be passed at all. See app.py.
     redirect_uri = current_app.config.get("PLAID_REDIRECT_URI")
     if redirect_uri:
-        link_token_args["redirect_uri"] = redirect_uri
-    request_body = LinkTokenCreateRequest(**link_token_args)
-    try:
-        response = _plaid_client().link_token_create(request_body)
-    except Exception:
-        # Broad on purpose, scoped to just this one call: Plaid's SDK only
-        # raises ApiException for HTTP-error-status responses — a true
-        # outage (connection refused, DNS failure, timeout) raises a raw
-        # urllib3/network exception instead, which the spec's "Plaid
-        # outage" error case still expects sanitized to a 502, not a leaked
-        # 500.
-        return jsonify(_GENERIC_PLAID_ERROR), 502
+        args["redirect_uri"] = redirect_uri
+    return args
 
+
+def _create_link_token_or_502(link_token_args):
+    """Runs `/link/token/create` and returns a Flask response tuple —
+    `({"link_token": ...}, 200)` on success, the sanitized generic error at
+    `502` on any failure. The except is broad on purpose, scoped to just
+    this one call: Plaid's SDK only raises ApiException for HTTP-error-status
+    responses — a true outage (connection refused, DNS failure, timeout)
+    raises a raw urllib3/network exception instead, which the spec's "Plaid
+    outage" error case still expects sanitized to a 502, not a leaked 500."""
+    try:
+        response = _plaid_client().link_token_create(LinkTokenCreateRequest(**link_token_args))
+    except Exception:
+        return jsonify(_GENERIC_PLAID_ERROR), 502
     return jsonify({"link_token": response["link_token"]}), 200
+
+
+@plaid_bp.route("/link-token", methods=["POST"])
+@jwt_required()
+def create_link_token():
+    user = _load_non_demo_user()
+    if user is None:
+        return jsonify({"error": "the demo account cannot connect a real bank"}), 403
+
+    link_token_args = _base_link_token_args(user)
+    link_token_args["products"] = [Products("transactions")]
+    return _create_link_token_or_502(link_token_args)
+
+
+@plaid_bp.route("/items/<int:item_id>/update-link-token", methods=["POST"])
+@jwt_required()
+def create_update_link_token(item_id):
+    """Mints a link_token in Plaid Link *update mode* with account selection,
+    so the user can authorize additional accounts at a bank they've already
+    linked. The Item's access_token is unchanged and no public_token comes
+    back — the frontend just triggers a sync afterwards, and the new
+    accounts flow in through /transactions/sync. See spec/plaid-connect.md."""
+    user = _load_non_demo_user()
+    if user is None:
+        return jsonify({"error": "the demo account cannot connect a real bank"}), 403
+
+    item = db.session.get(PlaidItem, item_id)
+    if item is None:
+        return jsonify({"error": "no such linked institution"}), 404
+    # Ownership by direct column comparison — the IDOR pattern from
+    # context/security-requirements.md. Must return before any Plaid call.
+    if item.user_id != user.id:
+        return jsonify({"error": "no such linked institution"}), 403
+
+    link_token_args = _base_link_token_args(user)
+    # Update mode: pass the existing token and ask for the account-select
+    # pane; never pass `products` for this use case (Plaid rejects it).
+    link_token_args["access_token"] = _decrypt(item.access_token_encrypted)
+    link_token_args["update"] = LinkTokenCreateRequestUpdate(account_selection_enabled=True)
+    return _create_link_token_or_502(link_token_args)
 
 
 @plaid_bp.route("/connect", methods=["POST"])
