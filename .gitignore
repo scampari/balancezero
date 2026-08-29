@@ -2,6 +2,7 @@ venv/
 __pycache__/
 *.pyc
 .env
+deploy/compose/.env.prod
 instance/
 # curl cookie jars from manual API testing — session tokens, never commit
 cookies*.txt
