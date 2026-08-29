@@ -122,4 +122,16 @@ html[data-theme='light'] {
   .tabular-nums {
     font-variant-numeric: tabular-nums;
   }
+
+  /* iOS Safari zooms the viewport when a focused form control has a
+     font-size below 16px. The app's dense controls are 12–14px by design;
+     keep that on desktop but lift them to 16px on phones so tapping a
+     field doesn't yank the page around. */
+  @media (max-width: 639px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
 }

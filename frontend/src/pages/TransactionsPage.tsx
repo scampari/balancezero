@@ -31,6 +31,113 @@ function todayISO(): string {
 // and from any numeric category id.
 const INCOME_OPTION = 'income'
 
+const UNCATEGORIZED_LABEL = 'Uncategorized'
+const INCOME_LABEL = 'To Be Budgeted'
+
+// The assignable-category <option> list is identical in the add form and the
+// datalist — keep it in one spot.
+function CategoryOptionList({ categories }: { categories: Budget['categories'] }) {
+  return (
+    <>
+      {categories.map((category) => (
+        <option key={category.id} value={category.id}>
+          {category.name}
+        </option>
+      ))}
+    </>
+  )
+}
+
+// Shared suggestion list for every category combobox on the page.
+const CATEGORY_DATALIST_ID = 'bz-category-options'
+
+function CategoryDatalist({ categories }: { categories: Budget['categories'] }) {
+  return (
+    <datalist id={CATEGORY_DATALIST_ID}>
+      <option value={UNCATEGORIZED_LABEL} />
+      <option value={INCOME_LABEL} />
+      {categories.map((category) => (
+        <option key={category.id} value={category.name} />
+      ))}
+    </datalist>
+  )
+}
+
+// The raw value handleCategoryChange expects for a transaction's current state.
+function rawCategoryValue(t: Pick<TransactionEntry, 'is_income' | 'category_id'>): string {
+  if (t.is_income) return INCOME_OPTION
+  return t.category_id != null ? String(t.category_id) : ''
+}
+
+function categoryDisplay(
+  t: Pick<TransactionEntry, 'is_income' | 'category_name'>,
+): string {
+  if (t.is_income) return INCOME_LABEL
+  return t.category_name ?? UNCATEGORIZED_LABEL
+}
+
+// An autocompleting text field over the category list, in place of a <select>.
+// Free text that doesn't resolve to a known category snaps back to the
+// current label on blur.
+function CategoryCombobox({
+  transaction,
+  categories,
+  onPick,
+  className,
+}: {
+  transaction: TransactionEntry
+  categories: Budget['categories']
+  onPick: (raw: string) => void
+  className?: string
+}) {
+  const current = categoryDisplay(transaction)
+  const [text, setText] = useState(current)
+  useEffect(() => setText(current), [current])
+
+  // Map a label to the raw value handleCategoryChange wants, or null if it
+  // isn't a known category.
+  function resolve(label: string): string | null {
+    const typed = label.trim().toLowerCase()
+    if (typed === '' || typed === UNCATEGORIZED_LABEL.toLowerCase()) return ''
+    if (typed === INCOME_LABEL.toLowerCase()) return INCOME_OPTION
+    const hit = categories.find((c) => c.name.toLowerCase() === typed)
+    return hit ? String(hit.id) : null
+  }
+
+  function commit(label: string) {
+    const raw = resolve(label)
+    if (raw === null || raw === rawCategoryValue(transaction)) {
+      setText(current) // unknown text or no change — snap back to the label
+      return
+    }
+    onPick(raw)
+  }
+
+  return (
+    <input
+      type="text"
+      list={CATEGORY_DATALIST_ID}
+      aria-label={`Category for ${transaction.description}`}
+      value={text}
+      onChange={(e) => {
+        const v = e.target.value
+        setText(v)
+        // an exact hit means they picked from the list — apply right away
+        if (resolve(v) !== null && v === v.trim()) commit(v)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+        if (e.key === 'Escape') {
+          setText(current)
+          e.currentTarget.blur()
+        }
+      }}
+      onBlur={(e) => commit(e.currentTarget.value)}
+      className={className}
+    />
+  )
+}
+
 export function TransactionsPage() {
   const { accessToken, setAccessToken, isAuthChecked } = useAuth()
   const navigate = useNavigate()
@@ -130,7 +237,8 @@ export function TransactionsPage() {
 
   return (
     <AppShell>
-      <div className="mb-6 flex items-center justify-between">
+      <CategoryDatalist categories={assignableCategories} />
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-semibold tracking-tight text-(--color-text)">Transactions</h1>
         <button
           type="button"
@@ -140,7 +248,7 @@ export function TransactionsPage() {
           }}
           disabled={accounts.length === 0}
           title={accounts.length === 0 ? 'Connect a bank or add an account first' : undefined}
-          className="rounded-md border border-(--color-border) px-3 py-1.5 text-sm font-medium text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text) disabled:cursor-not-allowed disabled:opacity-60"
+          className="rounded-md border border-(--color-border) px-3 py-1.5 text-sm font-medium text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text) disabled:cursor-not-allowed disabled:opacity-60 max-sm:w-full"
         >
           {showAdd ? 'Cancel' : 'Add transaction'}
         </button>
@@ -149,46 +257,50 @@ export function TransactionsPage() {
       {showAdd && (
         <form
           onSubmit={handleAdd}
-          className="mb-4 flex flex-wrap items-end gap-2 rounded-xl border border-(--color-border) bg-(--color-surface) p-3"
+          className="mb-4 flex flex-col gap-3 rounded-xl border border-(--color-border) bg-(--color-surface) p-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-2"
         >
-          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted)">
+          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted) max-sm:w-full">
             Account
-            <select name="account_id" required className={inputClass}>
+            <select name="account_id" required className={`${inputClass} max-sm:w-full`}>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted)">
+          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted) max-sm:w-full">
             Date
-            <input type="date" name="posted_at" required defaultValue={todayISO()} className={inputClass} />
+            <input
+              type="date"
+              name="posted_at"
+              required
+              defaultValue={todayISO()}
+              className={`${inputClass} max-sm:w-full`}
+            />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted)">
+          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted) max-sm:w-full">
             Amount
             <input
               name="amount"
               required
               inputMode="decimal"
               placeholder="-42.50"
-              className={`${inputClass} w-24`}
+              className={`${inputClass} w-full sm:w-24`}
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted)">
+          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted) max-sm:w-full">
             Description
-            <input name="description" required className={`${inputClass} w-48`} />
+            <input name="description" required className={`${inputClass} w-full sm:w-48`} />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted)">
+          <label className="flex flex-col gap-1 text-xs text-(--color-text-muted) max-sm:w-full">
             Category
-            <select name="category_id" className={inputClass}>
+            <select name="category_id" className={`${inputClass} max-sm:w-full`}>
               <option value="">Uncategorized</option>
-              {assignableCategories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
+              <CategoryOptionList categories={assignableCategories} />
             </select>
           </label>
           <button
             type="submit"
-            className="rounded-md bg-(--color-accent) px-3 py-1.5 text-xs font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover)"
+            className="rounded-md bg-(--color-accent) px-3 py-1.5 text-xs font-medium text-(--color-on-accent) transition-colors hover:bg-(--color-accent-hover) max-sm:w-full"
           >
             Add
           </button>
@@ -204,79 +316,136 @@ export function TransactionsPage() {
           No transactions this month.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-(--color-border)">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-(--color-border) bg-(--color-surface)">
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Date</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Description</th>
-                <th className="px-4 py-2.5 text-right text-xs font-medium text-(--color-text-muted)">Amount</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Category</th>
-                <th className="px-4 py-2.5" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-(--color-border)">
-              {transactions.map((transaction) => {
-                const amount = Number(transaction.amount)
-                return (
-                  <tr key={transaction.id} className="bg-(--color-surface) transition-colors hover:bg-(--color-surface-hover)">
-                    <td className="whitespace-nowrap px-4 py-3 text-(--color-text-muted)">
-                      {formatDate(transaction.posted_at)}
-                    </td>
-                    <td className="px-4 py-3 text-(--color-text)">
-                      {transaction.description}
-                      {transaction.pending && (
-                        <span className="ml-2 rounded-full border border-(--color-border) px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase">
-                          Pending
-                        </span>
-                      )}
-                      {transaction.transfer && (
-                        <span
-                          title="A movement between your own accounts — not counted as spending"
-                          className="ml-2 rounded-full border border-(--color-border) px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase"
+        <>
+          {/* Desktop: table. Hidden on phones — a 5-column table can't reflow. */}
+          <div className="hidden overflow-hidden rounded-xl border border-(--color-border) sm:block">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-(--color-border) bg-(--color-surface)">
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Date</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Description</th>
+                  <th className="px-4 py-2.5 text-right text-xs font-medium text-(--color-text-muted)">Amount</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-(--color-text-muted)">Category</th>
+                  <th className="px-4 py-2.5" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-(--color-border)">
+                {transactions.map((transaction) => {
+                  const amount = Number(transaction.amount)
+                  return (
+                    <tr key={transaction.id} className="bg-(--color-surface) transition-colors hover:bg-(--color-surface-hover)">
+                      <td className="whitespace-nowrap px-4 py-3 text-(--color-text-muted)">
+                        {formatDate(transaction.posted_at)}
+                      </td>
+                      <td className="px-4 py-3 text-(--color-text)">
+                        {transaction.description}
+                        {transaction.pending && (
+                          <span className="ml-2 rounded-full border border-(--color-border) px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase">
+                            Pending
+                          </span>
+                        )}
+                        {transaction.transfer && (
+                          <span
+                            title="A movement between your own accounts — not counted as spending"
+                            className="ml-2 rounded-full border border-(--color-border) px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase"
+                          >
+                            Transfer
+                          </span>
+                        )}
+                      </td>
+                      <td
+                        className={`tabular-nums whitespace-nowrap px-4 py-3 text-right font-medium ${
+                          amount < 0 ? 'text-(--color-text)' : 'text-(--color-accent)'
+                        }`}
+                      >
+                        {formatMoney(transaction.amount)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <CategoryCombobox
+                          transaction={transaction}
+                          categories={assignableCategories}
+                          onPick={(raw) => handleCategoryChange(transaction.id, raw)}
+                          className="w-full max-w-40 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                        />
+                      </td>
+                      <td className="px-2 py-3 text-right">
+                        <button
+                          type="button"
+                          aria-label={`Delete ${transaction.description}`}
+                          onClick={() => handleDelete(transaction.id)}
+                          className="rounded px-2 py-1 text-xs text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-negative)"
                         >
-                          Transfer
-                        </span>
-                      )}
-                    </td>
-                    <td
-                      className={`tabular-nums whitespace-nowrap px-4 py-3 text-right font-medium ${
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile: one card per transaction. */}
+          <ul className="space-y-2 sm:hidden">
+            {transactions.map((transaction) => {
+              const amount = Number(transaction.amount)
+              return (
+                <li
+                  key={transaction.id}
+                  className="rounded-xl border border-(--color-border) bg-(--color-surface) p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm text-(--color-text)">{transaction.description}</p>
+                      <p className="mt-0.5 text-xs text-(--color-text-muted)">
+                        {formatDate(transaction.posted_at)}
+                      </p>
+                    </div>
+                    <span
+                      className={`tabular-nums shrink-0 text-sm font-medium ${
                         amount < 0 ? 'text-(--color-text)' : 'text-(--color-accent)'
                       }`}
                     >
                       {formatMoney(transaction.amount)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <select
-                        value={transaction.is_income ? INCOME_OPTION : (transaction.category_id ?? '')}
-                        onChange={(event) => handleCategoryChange(transaction.id, event.target.value)}
-                        className="w-full max-w-40 rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1 text-xs text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
-                      >
-                        <option value="">Uncategorized</option>
-                        <option value={INCOME_OPTION}>To Be Budgeted</option>
-                        {assignableCategories.map((category) => (
-                          <option key={category.id} value={category.id}>
-                            {category.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="px-2 py-3 text-right">
-                      <button
-                        type="button"
-                        aria-label={`Delete ${transaction.description}`}
-                        onClick={() => handleDelete(transaction.id)}
-                        className="rounded px-2 py-1 text-xs text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-negative)"
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                    </span>
+                  </div>
+
+                  {(transaction.pending || transaction.transfer) && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {transaction.pending && (
+                        <span className="rounded-full border border-(--color-border) px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase">
+                          Pending
+                        </span>
+                      )}
+                      {transaction.transfer && (
+                        <span className="rounded-full border border-(--color-border) px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-(--color-text-faint) uppercase">
+                          Transfer
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="mt-2 flex items-center gap-2">
+                    <CategoryCombobox
+                      transaction={transaction}
+                      categories={assignableCategories}
+                      onPick={(raw) => handleCategoryChange(transaction.id, raw)}
+                      className="w-full rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1.5 text-sm text-(--color-text) outline-none transition-colors focus:border-(--color-accent-border) focus:ring-2 focus:ring-(--color-accent-bg)"
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Delete ${transaction.description}`}
+                      onClick={() => handleDelete(transaction.id)}
+                      className="shrink-0 rounded px-2 py-1.5 text-sm text-(--color-text-faint) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-negative)"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </>
       )}
     </AppShell>
   )

@@ -32,7 +32,7 @@ export function SignupPage() {
   const labelClass = 'block text-xs font-medium text-(--color-text-muted)'
 
   return (
-    <div className="flex min-h-svh items-center justify-center bg-(--color-bg) px-6">
+    <div className="flex min-h-svh items-center justify-center bg-(--color-bg) px-4 py-8 sm:px-6">
       <div className="w-full max-w-sm">
         <h1 className="mb-1 text-2xl font-semibold tracking-tight text-(--color-text)">Create your account</h1>
         <p className="mb-8 text-sm text-(--color-text-muted)">BalanceZero is invite-only. Enter your code to get started.</p>
