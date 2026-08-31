@@ -68,7 +68,7 @@ Subcategories and Plaid connect/sync are already built, out of scope.)
   reuses the already-designed `is_income` → `ready_to_assign` mechanism
   unchanged — no formula change in `budget-api.md` needed, this is purely a
   one-time data-seeding concern. Matches the standard budgeting-app pattern
-  (YNAB's own "Starting Balance" transaction) for reconciling a bank
+  (a one-time "Starting Balance" transaction) for reconciling a bank
   balance into a budget without importing transaction history.
   - **Scope:** one-off data migration/script for the accounts that exist
     today, run once when this slice ships. NOT a new API endpoint and NOT

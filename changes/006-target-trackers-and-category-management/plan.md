@@ -59,7 +59,7 @@ batch of budget-view gaps the user asked for:
   of its destination group before an explicit `position` in the same
   request is applied.
 - **`funded` = envelope balance** for a dated target — the category's
-  current `available` (`max(0, ...)`), YNAB-style: spending against the
+  current `available` (`max(0, ...)`), envelope-style: spending against the
   category lowers `funded` so `needed_this_month` rises. `monthly` targets
   use `allocated_this_month` as `funded`.
 - **No hierarchy math.** Parent and child stay independent line items;

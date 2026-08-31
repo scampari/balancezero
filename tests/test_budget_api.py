@@ -1366,7 +1366,7 @@ def test_set_allocation_on_a_group_category_returns_400(client, test_user, auth_
 
 
 # ---------------------------------------------------------------------------
-# GET /api/budget — YNAB-style credit-card budgeting (changes/021)
+# GET /api/budget — envelope-style credit-card budgeting (changes/021)
 # ---------------------------------------------------------------------------
 
 

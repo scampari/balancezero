@@ -1,6 +1,6 @@
 # BalanceZero
 
-A YNAB-style zero-based budgeting web app, connected to real bank data via [Plaid](https://plaid.com/).
+A zero-based (every-dollar) budgeting web app, connected to real bank data via [Plaid](https://plaid.com/).
 Every dollar of income gets assigned to a category each month (income − allocated = 0), and unspent or overspent category balances roll forward month to month.
 
 Flask JSON API + React SPA with JWT auth, a working budget view, transaction categorization, and Plaid bank integration (Link-based connect + cursor-based transaction sync, both tested against Plaid's real Sandbox).

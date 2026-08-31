@@ -447,7 +447,7 @@ def get_budget():
             "rollover": available - allocated_this_month - spent_this_month,
         }
 
-    # --- YNAB-style credit-card budgeting (changes/021) -------------------
+    # --- envelope-style credit-card budgeting (changes/021) --------------
     # Each auto-created payment category is bound to a card. Its "available"
     # is the cash set aside to pay that card down:
     #   available(P) = Σ(allocations to P)                 [already in own]
