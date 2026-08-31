@@ -1634,26 +1634,23 @@ def test_get_budget_overspend_rolls_negative_into_next_month(client, test_user, 
     assert Decimal(entry["available"]) == Decimal("-30.00")
 
 
-def test_get_budget_ready_to_assign_is_scoped_to_income_through_viewed_month(client, test_user, auth_headers):
-    # Arrange — $1000 income this month, $500 more next month.
+def test_get_budget_ready_to_assign_is_global_across_months(client, test_user, auth_headers):
+    # changes/026 — Ready to Assign is one figure, identical on every month:
+    # all-time income minus all-time allocations, independent of the viewed month.
     from decimal import Decimal
 
     account = _account(test_user.id)
     _txn(account.id, date.today().replace(day=1), "1000.00", is_income=True)
     _txn(account.id, _next_month_date(), "500.00", is_income=True)
 
-    # Act / Assert — next month's income doesn't count until you're there.
-    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
-    assert Decimal(body["ready_to_assign"]) == Decimal("1000.00")
-
-    body_next = client.get(
-        f"/api/budget?month={_next_month_date().isoformat()}", headers=auth_headers
-    ).get_json()
-    assert Decimal(body_next["ready_to_assign"]) == Decimal("1500.00")
+    for month in (CURRENT_MONTH, _next_month_date().isoformat()):
+        body = client.get(f"/api/budget?month={month}", headers=auth_headers).get_json()
+        assert Decimal(body["ready_to_assign"]) == Decimal("1500.00")
 
 
-def test_get_budget_future_allocation_does_not_reduce_current_month_ready_to_assign(client, test_user, auth_headers):
-    # Arrange — $1000 income this month, $250 assigned into next month.
+def test_get_budget_future_allocation_reduces_ready_to_assign_now(client, test_user, auth_headers):
+    # changes/026 — assigning into a future month debits the single global pool
+    # immediately, so the same dollars can't be assigned in two months.
     from decimal import Decimal
 
     account = _account(test_user.id)
@@ -1661,14 +1658,9 @@ def test_get_budget_future_allocation_does_not_reduce_current_month_ready_to_ass
     cid = _new_category(client, auth_headers, "Groceries")["id"]
     _allocate(client, auth_headers, cid, "250.00", month=_next_month_date().isoformat())
 
-    # Act / Assert — this month is untouched; next month shows the assignment.
-    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
-    assert Decimal(body["ready_to_assign"]) == Decimal("1000.00")
-
-    body_next = client.get(
-        f"/api/budget?month={_next_month_date().isoformat()}", headers=auth_headers
-    ).get_json()
-    assert Decimal(body_next["ready_to_assign"]) == Decimal("750.00")
+    for month in (CURRENT_MONTH, _next_month_date().isoformat()):
+        body = client.get(f"/api/budget?month={month}", headers=auth_headers).get_json()
+        assert Decimal(body["ready_to_assign"]) == Decimal("750.00")
 
 
 def test_get_budget_totals_include_rollover(client, test_user, auth_headers):

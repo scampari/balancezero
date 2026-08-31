@@ -381,20 +381,19 @@ def get_budget():
 
     # Transfers between the user's own accounts (incl. credit-card payments)
     # never count as spending or income — the money just moved (changes/019).
-    # Month-scoped (changes/025): "ready to assign" for the viewed month is the
-    # income received through the end of that month minus every allocation made
-    # for that month or any earlier one. Assigning money to a *future* month
-    # therefore doesn't shrink an earlier month's figure — only the month you're
-    # standing in and the ones after it.
+    # "Ready to assign" is a single global figure, the same on every month
+    # (changes/026, reverting the brief month-scoped attempt in 025): all-time
+    # income minus every allocation ever made, for any month. Assigning money
+    # into a future month debits this pool right now, so the same dollars can
+    # never look assignable in two different months. Only the per-category
+    # `available` / `rollover` numbers are month-bounded (see below).
     income_total = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
         Account.user_id == user_id,
         Transaction.is_income.is_(True),
         Transaction.transfer.is_(False),
-        Transaction.posted_at < end,
     ).scalar() or Decimal("0")
     total_allocated = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
         BudgetAllocation.user_id == user_id,
-        BudgetAllocation.month <= month,
     ).scalar() or Decimal("0")
     ready_to_assign = income_total - total_allocated
 
