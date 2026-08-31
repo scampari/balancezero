@@ -39,6 +39,36 @@ const topLevelNames = (page: Page) =>
   )
 
 test.describe('budget page — management', () => {
+  test('budget is separated by month — assigning ahead leaves the current month untouched', async ({
+    page,
+  }) => {
+    await login(page)
+
+    const shopping = row(page, 'Shopping')
+    const assign = () => shopping.getByLabel('Assign amount for Shopping')
+
+    // Current month — nothing assigned to Shopping in the seed.
+    await expect(assign()).toHaveValue(/^0(\.00)?$/)
+
+    // Step forward a month and budget $75 ahead.
+    await page.getByRole('button', { name: 'Next month' }).click()
+    await expect(page).toHaveURL(/[?&]month=\d{4}-\d{2}/)
+    await assign().fill('75')
+    await assign().blur()
+    await expect(assign()).toHaveValue('75.00')
+
+    // Back to the current month — still zero, and it survives a reload.
+    await page.getByRole('button', { name: 'Today' }).click()
+    await expect(page).toHaveURL(/\/budget$/)
+    await expect(assign()).toHaveValue(/^0(\.00)?$/)
+    await page.reload()
+    await expect(assign()).toHaveValue(/^0(\.00)?$/)
+
+    // Forward again — the $75 is still parked in next month.
+    await page.getByRole('button', { name: 'Next month' }).click()
+    await expect(assign()).toHaveValue('75.00')
+  })
+
   test('shows a totals row and the seeded hierarchy', async ({ page }) => {
     await login(page)
 

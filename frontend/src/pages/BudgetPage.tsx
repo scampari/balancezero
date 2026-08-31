@@ -1,5 +1,5 @@
 import { useEffect, useState, type SyntheticEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   type Budget,
   type CategoryPatch,
@@ -28,7 +28,22 @@ function availableColor(value: number): string {
   return 'text-(--color-accent)'
 }
 
-const CURRENT_MONTH = new Date().toISOString().slice(0, 7) + '-01'
+// The budget is separated by month (changes/025). The viewed month is a
+// "YYYY-MM" key held in the URL (?month=), absent for the current month.
+function currentMonthKey(): string {
+  return new Date().toISOString().slice(0, 7)
+}
+
+function shiftMonth(key: string, delta: number): string {
+  const [year, month] = key.split('-').map(Number)
+  const d = new Date(year, month - 1 + delta, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function monthLabel(key: string): string {
+  const [year, month] = key.split('-').map(Number)
+  return new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+}
 
 const COLLAPSED_KEY = 'bz.budget.collapsed'
 
@@ -79,7 +94,22 @@ const KEBAB_BASE =
 export function BudgetPage() {
   const { accessToken, setAccessToken, isAuthChecked } = useAuth()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const month = searchParams.get('month') ?? currentMonthKey()
+  const monthDate = `${month}-01`
   const [budget, setBudget] = useState<Budget | null>(null)
+
+  function goToMonth(nextKey: string) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (nextKey === currentMonthKey()) next.delete('month')
+        else next.set('month', nextKey)
+        return next
+      },
+      { replace: true },
+    )
+  }
   // false = not adding; null = adding a top-level category; number = adding a
   // subcategory under that parent id.
   const [addingUnder, setAddingUnder] = useState<number | null | false>(false)
@@ -108,8 +138,8 @@ export function BudgetPage() {
     })
   }
 
-  function loadBudget(token: string) {
-    return getBudgetWithAutoRefresh(token, setAccessToken).then((data) => setBudget(data))
+  function loadBudget(token: string, forMonth: string = monthDate) {
+    return getBudgetWithAutoRefresh(token, setAccessToken, forMonth).then((data) => setBudget(data))
   }
 
   async function applyPatch(categoryId: number, patch: CategoryPatch) {
@@ -167,7 +197,7 @@ export function BudgetPage() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken, isAuthChecked, navigate, setAccessToken])
+  }, [accessToken, isAuthChecked, navigate, setAccessToken, monthDate])
 
   function openNewCategory(parentId: number | null) {
     setNewCatDraft('')
@@ -239,7 +269,7 @@ export function BudgetPage() {
       return next
     })
     if (draft === '' || Number.isNaN(Number(draft))) return
-    await setAllocationWithAutoRefresh(accessToken, setAccessToken, categoryId, CURRENT_MONTH, draft)
+    await setAllocationWithAutoRefresh(accessToken, setAccessToken, categoryId, monthDate, draft)
     await loadBudget(accessToken)
   }
 
@@ -279,6 +309,22 @@ export function BudgetPage() {
           {available < 0 && ' — debt not covered by your budget'}
         </span>
       </div>
+    )
+  }
+
+  // The month-to-month carry (changes/025): what this envelope started the
+  // viewed month with, before this month's own assignments and spending.
+  function rolloverLine(category: Category) {
+    const rollover = Number(category.rollover)
+    if (rollover === 0) return null
+    return (
+      <span
+        className={`text-xs ${rollover < 0 ? 'text-(--color-negative)' : 'text-(--color-text-faint)'}`}
+      >
+        {rollover < 0
+          ? `Overspent last month ${formatMoney(category.rollover)}`
+          : `Rolled over +${formatMoney(category.rollover)}`}
+      </span>
     )
   }
 
@@ -436,9 +482,16 @@ export function BudgetPage() {
 
             {/* meta line stays visible at rest (target progress / card
                 payment status); only the actions below it are disclosed */}
-            {(isPayment || category.target) && (
-              <div className="min-w-0" onClick={noToggle}>
-                {isPayment ? paymentLine(category) : targetLine(category)}
+            {(isPayment || category.target || Number(category.rollover) !== 0) && (
+              <div className="flex min-w-0 flex-col gap-0.5" onClick={noToggle}>
+                {isPayment ? (
+                  paymentLine(category)
+                ) : (
+                  <>
+                    {rolloverLine(category)}
+                    {targetLine(category)}
+                  </>
+                )}
               </div>
             )}
           </summary>
@@ -592,6 +645,37 @@ export function BudgetPage() {
 
   return (
     <AppShell>
+      <div className="mb-4 flex items-center justify-center gap-2">
+        <button
+          type="button"
+          aria-label="Previous month"
+          onClick={() => goToMonth(shiftMonth(month, -1))}
+          className="rounded-md border border-(--color-border) px-2.5 py-1 text-sm text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text)"
+        >
+          ◂
+        </button>
+        <span className="min-w-40 text-center text-sm font-medium text-(--color-text)">
+          {monthLabel(month)}
+        </span>
+        <button
+          type="button"
+          aria-label="Next month"
+          onClick={() => goToMonth(shiftMonth(month, 1))}
+          className="rounded-md border border-(--color-border) px-2.5 py-1 text-sm text-(--color-text-muted) transition-colors hover:bg-(--color-surface-hover) hover:text-(--color-text)"
+        >
+          ▸
+        </button>
+        {month !== currentMonthKey() && (
+          <button
+            type="button"
+            onClick={() => goToMonth(currentMonthKey())}
+            className="ml-1 rounded-md px-2 py-1 text-xs text-(--color-text-faint) transition-colors hover:text-(--color-text-muted)"
+          >
+            Today
+          </button>
+        )}
+      </div>
+
       <div className="mb-6 rounded-xl border border-(--color-border) bg-(--color-surface) p-5 sm:mb-8 sm:p-6">
         <p className="text-xs font-medium text-(--color-text-muted)">Ready to Assign</p>
         <p
