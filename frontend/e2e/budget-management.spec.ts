@@ -33,9 +33,21 @@ async function login(page: Page) {
 
 const row = (page: Page, name: string) => page.locator(`li[data-category="${name}"]`)
 const archivedRow = (page: Page, name: string) => page.locator(`li[data-archived-category="${name}"]`)
+
+// The row's rename / move / archive actions live behind a ⋮ disclosure now.
+// Click the visible (desktop) ⋮ to reveal them.
+async function openRowMenu(page: Page, name: string) {
+  await row(page, name).locator('summary').getByText('⋮').filter({ visible: true }).click()
+}
+
+// Top-level rows and their children are siblings in one <ul>; a child's name
+// span carries the muted text colour, a top-level's doesn't.
 const topLevelNames = (page: Page) =>
-  page.locator('ul > li[data-category]:not(.pl-10)').evaluateAll((els) =>
-    els.map((el) => el.querySelector('span')?.textContent?.trim() ?? ''),
+  page.locator('ul.divide-y > li[data-category]').evaluateAll((els) =>
+    els
+      .map((el) => el.querySelector('summary span.truncate'))
+      .filter((span): span is Element => span != null && !span.className.includes('text-(--color-text-muted)'))
+      .map((span) => span.textContent?.trim() ?? ''),
   )
 
 test.describe('budget page — management', () => {
@@ -72,18 +84,21 @@ test.describe('budget page — management', () => {
   test('shows a totals row and the seeded hierarchy', async ({ page }) => {
     await login(page)
 
-    await expect(page.getByText('Available to Spend', { exact: false })).toBeVisible()
+    await expect(page.getByTestId('ready-to-assign')).toBeVisible()
     const totals = page.getByTestId('budget-totals')
     await expect(totals).toBeVisible()
     await expect(totals).toContainText('Total')
     // Groceries: allocated 400, spent 55.25 this month → available 344.75
     await expect(totals).toContainText('$344.75')
-    // "Groceries" is seeded as a subcategory of "Food"
-    await expect(row(page, 'Groceries')).toHaveClass(/pl-10/)
+    // "Groceries" is seeded as a subcategory of "Food" — the group parent
+    // carries the collapse caret, the child row is still visible under it.
+    await expect(row(page, 'Food').getByRole('button', { name: /(Collapse|Expand) Food/ })).toBeVisible()
+    await expect(row(page, 'Groceries')).toBeVisible()
   })
 
   test('renaming a category persists across navigation', async ({ page }) => {
     await login(page)
+    await openRowMenu(page, 'Dining Out')
     await row(page, 'Dining Out').getByRole('button', { name: 'Rename' }).click()
     const input = row(page, 'Dining Out').getByLabel('Rename Dining Out')
     await input.fill('Restaurants')
@@ -100,9 +115,10 @@ test.describe('budget page — management', () => {
 
   test('archiving moves a category to the Archived section and unarchiving restores it', async ({ page }) => {
     await login(page)
-    await page.locator('details > summary').click() // expand Archived
+    await page.locator('summary', { hasText: /^Archived/ }).click() // expand Archived
     await expect(archivedRow(page, 'Old Subscriptions')).toBeVisible()
 
+    await openRowMenu(page, 'Rent')
     await row(page, 'Rent').getByRole('button', { name: 'Archive' }).click()
 
     await expect(row(page, 'Rent')).toHaveCount(0)
@@ -119,7 +135,8 @@ test.describe('budget page — management', () => {
     const before = await topLevelNames(page)
     expect(before.length).toBeGreaterThan(1)
 
-    await row(page, before[0]).getByRole('button', { name: `Move ${before[0]} down` }).click()
+    await openRowMenu(page, before[0])
+    await row(page, before[0]).getByRole('button', { name: 'Move down', exact: true }).click()
 
     await expect.poll(() => topLevelNames(page)).not.toEqual(before)
     const after = await topLevelNames(page)
