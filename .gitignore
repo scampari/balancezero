@@ -12,3 +12,6 @@ cookies*.txt
 # Playwright (root config run)
 /test-results/
 /playwright-report/
+
+# lavish-axi review artifacts (local only)
+.lavish/

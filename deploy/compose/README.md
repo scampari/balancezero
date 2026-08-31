@@ -117,6 +117,53 @@ bucketing every device together — if a second device gets rate-limited
 immediately, `TRUSTED_PROXY_COUNT` in `docker-compose.prod.yml` is wrong
 for this proxy chain (try `1`), then `up -d` again.
 
+## SSH into the tailscale node
+
+`TS_EXTRA_ARGS: --ssh` on the `tailscale` service enables Tailscale SSH on
+the `balancezero` tailnet device, so you can get a shell without a public
+port 22:
+
+```sh
+tailscale ssh balancezero        # -> root busybox shell in the tailscale container
+```
+
+Two requirements:
+
+1. **A tailnet policy `ssh` rule.** Tailscale SSH is deny-all until the
+   policy has an `ssh` block. In the admin console
+   (login.tailscale.com/admin/acls) add, adjusting the users/tags to taste:
+
+   ```json
+   "ssh": [
+     {
+       "action": "accept",
+       "src":    ["autogroup:member"],
+       "dst":    ["tag:balancezero"],
+       "users":  ["root"]
+     }
+   ]
+   ```
+
+   If the device isn't tagged, use its user (`"dst": ["autogroup:self"]`)
+   or the device owner instead of `tag:balancezero`. `check` instead of
+   `accept` forces re-auth per session.
+
+2. **Recreate the container** so the new arg takes effect:
+
+   ```sh
+   cd deploy/compose
+   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d tailscale
+   ```
+
+   The `tailscale` container logs should then show `SSH enabled`. Verify
+   from another tailnet device with `tailscale ssh balancezero true &&
+   echo ok`.
+
+This shell is a minimal Alpine/busybox environment (no app code, no
+`docker`) — it's for `tailscale status` / `tailscale serve status`
+diagnostics on the node itself. App containers are still reached with
+`docker compose ... exec`.
+
 ## Update / redeploy
 
 ```sh

@@ -97,6 +97,11 @@ services:
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "true"
       TS_SERVE_CONFIG: /config/serve.json
+      # Tailscale SSH into this node ("tailscale ssh balancezero"). Lands
+      # in a root busybox shell inside the tailscale container -- enough to
+      # run tailscale/serve diagnostics without a public port 22. Requires
+      # a matching "ssh" rule in the tailnet policy (see deploy/compose/README.md).
+      TS_EXTRA_ARGS: --ssh
     volumes:
       - tailscale-state:/var/lib/tailscale
       - ./serve.json:/config/serve.json:ro
