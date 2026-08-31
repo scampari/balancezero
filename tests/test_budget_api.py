@@ -1366,7 +1366,7 @@ def test_set_allocation_on_a_group_category_returns_400(client, test_user, auth_
 
 
 # ---------------------------------------------------------------------------
-# GET /api/budget — YNAB-style credit-card budgeting (changes/021)
+# GET /api/budget — envelope-style credit-card budgeting (changes/021)
 # ---------------------------------------------------------------------------
 
 
@@ -1570,3 +1570,146 @@ def test_cannot_rename_reparent_or_archive_a_payment_category(client, test_user,
     assert _patch_category(client, auth_headers, payment_cat.id, parent_id=None).status_code == 400
     # Reordering is fine.
     assert _patch_category(client, auth_headers, payment_cat.id, position=0).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/budget — month-separated budget: future budgeting + overspend
+# rollover (changes/025). Traces to spec/budget-api.md.
+# ---------------------------------------------------------------------------
+
+
+def _next_month_date():
+    today = date.today().replace(day=1)
+    return date(today.year + 1, 1, 1) if today.month == 12 else date(today.year, today.month + 1, 1)
+
+
+def test_get_budget_available_excludes_later_month_activity(client, test_user, auth_headers):
+    # Arrange — fund + spend this month, then pile activity into next month.
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+    account = _account(test_user.id)
+    _allocate(client, auth_headers, cid, "100.00")
+    _txn(account.id, date.today().replace(day=1), "-30.00", category_id=cid)
+    _allocate(client, auth_headers, cid, "999.00", month=_next_month_date().isoformat())
+    _txn(account.id, _next_month_date(), "-500.00", category_id=cid)
+
+    # Act / Assert — next month's allocation and spend are invisible from here.
+    entry = _budget_entry(client, auth_headers, cid)
+    assert Decimal(entry["available"]) == Decimal("70.00")
+    assert Decimal(entry["rollover"]) == Decimal("0")
+
+
+def test_get_budget_rollover_carries_prior_month_leftover(client, test_user, auth_headers):
+    # Arrange — last month funded 100, spent 30; nothing budgeted this month.
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+    account = _account(test_user.id)
+    _allocate(client, auth_headers, cid, "100.00", month=_prev_month_date().isoformat())
+    _txn(account.id, _prev_month_date(), "-30.00", category_id=cid)
+
+    # Act / Assert — the $70 leftover carries in as rollover and available.
+    entry = _budget_entry(client, auth_headers, cid)
+    assert Decimal(entry["rollover"]) == Decimal("70.00")
+    assert Decimal(entry["available"]) == Decimal("70.00")
+    assert Decimal(entry["allocated_this_month"]) == Decimal("0")
+
+
+def test_get_budget_overspend_rolls_negative_into_next_month(client, test_user, auth_headers):
+    # Arrange — last month funded 20 but spent 50.
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+    account = _account(test_user.id)
+    _allocate(client, auth_headers, cid, "20.00", month=_prev_month_date().isoformat())
+    _txn(account.id, _prev_month_date(), "-50.00", category_id=cid)
+
+    prev_entry = _budget_entry(client, auth_headers, cid, month=_prev_month_date().isoformat())
+    assert Decimal(prev_entry["available"]) == Decimal("-30.00")
+
+    # Act / Assert — the overspend carries forward as a negative rollover.
+    entry = _budget_entry(client, auth_headers, cid)
+    assert Decimal(entry["rollover"]) == Decimal("-30.00")
+    assert Decimal(entry["available"]) == Decimal("-30.00")
+
+
+def test_get_budget_ready_to_assign_is_scoped_to_income_through_viewed_month(client, test_user, auth_headers):
+    # Arrange — $1000 income this month, $500 more next month.
+    from decimal import Decimal
+
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "1000.00", is_income=True)
+    _txn(account.id, _next_month_date(), "500.00", is_income=True)
+
+    # Act / Assert — next month's income doesn't count until you're there.
+    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    assert Decimal(body["ready_to_assign"]) == Decimal("1000.00")
+
+    body_next = client.get(
+        f"/api/budget?month={_next_month_date().isoformat()}", headers=auth_headers
+    ).get_json()
+    assert Decimal(body_next["ready_to_assign"]) == Decimal("1500.00")
+
+
+def test_get_budget_future_allocation_does_not_reduce_current_month_ready_to_assign(client, test_user, auth_headers):
+    # Arrange — $1000 income this month, $250 assigned into next month.
+    from decimal import Decimal
+
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "1000.00", is_income=True)
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+    _allocate(client, auth_headers, cid, "250.00", month=_next_month_date().isoformat())
+
+    # Act / Assert — this month is untouched; next month shows the assignment.
+    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    assert Decimal(body["ready_to_assign"]) == Decimal("1000.00")
+
+    body_next = client.get(
+        f"/api/budget?month={_next_month_date().isoformat()}", headers=auth_headers
+    ).get_json()
+    assert Decimal(body_next["ready_to_assign"]) == Decimal("750.00")
+
+
+def test_get_budget_totals_include_rollover(client, test_user, auth_headers):
+    from decimal import Decimal
+
+    cid = _new_category(client, auth_headers, "Groceries")["id"]
+    _allocate(client, auth_headers, cid, "80.00", month=_prev_month_date().isoformat())
+
+    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    assert Decimal(body["totals"]["rollover"]) == Decimal("80.00")
+
+
+def test_get_budget_group_rollover_sums_its_children(client, test_user, auth_headers):
+    from decimal import Decimal
+
+    food = _create_category(client, auth_headers, name="Food").get_json()["id"]
+    groceries = client.post(
+        "/api/categories", json={"name": "Groceries", "parent_id": food}, headers=auth_headers
+    ).get_json()["id"]
+    dining = client.post(
+        "/api/categories", json={"name": "Dining", "parent_id": food}, headers=auth_headers
+    ).get_json()["id"]
+    _allocate(client, auth_headers, groceries, "100.00", month=_prev_month_date().isoformat())
+    _allocate(client, auth_headers, dining, "40.00", month=_prev_month_date().isoformat())
+
+    entry = _budget_entry(client, auth_headers, food)
+    assert Decimal(entry["rollover"]) == Decimal("140.00")
+
+
+def test_card_activity_after_the_viewed_month_is_excluded_from_payment_available(
+    client, test_user, auth_headers, credit_account
+):
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _card_txn(card.id, "-40.00", category_id=groceries, description="THIS MONTH", plaid_transaction_id="g1")
+    _card_txn(
+        card.id, "-500.00", category_id=groceries, description="NEXT MONTH",
+        plaid_transaction_id="g2", posted_at=_next_month_date(),
+    )
+
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    assert Decimal(entry["available"]) == Decimal("40.00")

@@ -11,7 +11,7 @@ children's budgeted / spent / available. This deliberately reverses
 `spec/budget-api.md`'s "no roll-up / parent and child are independent line
 items" design.
 
-Chosen scope (from the user): **block them, YNAB-style** — a category with
+Chosen scope (from the user): **block them, envelope-style** — a category with
 children can't be allocated to or have transactions assigned to it; pre-
 existing parent-level amounts fold into the group total. Collapsed state
 **remembered per browser**.

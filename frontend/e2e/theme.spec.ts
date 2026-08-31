@@ -1,4 +1,8 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
+
+// The header renders a Theme <select> for desktop and another inside the
+// mobile overflow menu — both are always in the DOM. Grab the visible one.
+const themeSelect = (page: Page) => page.getByLabel('Theme').filter({ visible: true })
 
 // Each Playwright test gets a fresh context (localStorage included), but be
 // explicit so a stored theme can never bleed into another spec if that ever
@@ -27,7 +31,7 @@ test.describe('theme picker', () => {
     await expect(page).toHaveURL(/\/budget$/)
 
     // Act
-    await page.getByLabel('Theme').selectOption('light')
+    await themeSelect(page).selectOption('light')
 
     // Assert — applied now
     await expect
@@ -40,7 +44,7 @@ test.describe('theme picker', () => {
     await expect
       .poll(() => page.evaluate(() => document.documentElement.dataset.theme))
       .toBe('light')
-    await expect(page.getByLabel('Theme')).toHaveValue('light')
+    await expect(themeSelect(page)).toHaveValue('light')
   })
 
   test('System follows the OS colour scheme', async ({ page }) => {
@@ -52,7 +56,7 @@ test.describe('theme picker', () => {
     await expect(page).toHaveURL(/\/budget$/)
 
     // Default choice is "System"
-    await expect(page.getByLabel('Theme')).toHaveValue('system')
+    await expect(themeSelect(page)).toHaveValue('system')
     await expect
       .poll(() => page.evaluate(() => document.documentElement.dataset.theme))
       .toBe('dark')

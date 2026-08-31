@@ -381,13 +381,20 @@ def get_budget():
 
     # Transfers between the user's own accounts (incl. credit-card payments)
     # never count as spending or income — the money just moved (changes/019).
+    # Month-scoped (changes/025): "ready to assign" for the viewed month is the
+    # income received through the end of that month minus every allocation made
+    # for that month or any earlier one. Assigning money to a *future* month
+    # therefore doesn't shrink an earlier month's figure — only the month you're
+    # standing in and the ones after it.
     income_total = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
         Account.user_id == user_id,
         Transaction.is_income.is_(True),
         Transaction.transfer.is_(False),
+        Transaction.posted_at < end,
     ).scalar() or Decimal("0")
     total_allocated = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
-        BudgetAllocation.user_id == user_id
+        BudgetAllocation.user_id == user_id,
+        BudgetAllocation.month <= month,
     ).scalar() or Decimal("0")
     ready_to_assign = income_total - total_allocated
 
@@ -410,12 +417,17 @@ def get_budget():
         allocated_this_month = db.session.query(BudgetAllocation.allocated_amount).filter_by(
             category_id=cat.id, month=month
         ).scalar() or Decimal("0")
-        allocated_total = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter_by(
-            category_id=cat.id
+        # Month-bounded envelope balance (changes/025): everything allocated for
+        # this month or earlier, plus every signed transaction posted before the
+        # month ends. Anything dated in a later month is invisible from here.
+        allocated_through = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
+            BudgetAllocation.category_id == cat.id,
+            BudgetAllocation.month <= month,
         ).scalar() or Decimal("0")
-        spent_total = db.session.query(db.func.sum(Transaction.amount)).filter(
+        spent_through_end = db.session.query(db.func.sum(Transaction.amount)).filter(
             Transaction.category_id == cat.id,
             Transaction.transfer.is_(False),
+            Transaction.posted_at < end,
         ).scalar() or Decimal("0")
         spent_this_month = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
             Transaction.category_id == cat.id,
@@ -424,13 +436,18 @@ def get_budget():
             Transaction.posted_at >= start,
             Transaction.posted_at < end,
         ).scalar() or Decimal("0")
+        available = allocated_through + spent_through_end
         own[cat.id] = {
             "allocated_this_month": allocated_this_month,
             "spent_this_month": spent_this_month,
-            "available": allocated_total + spent_total,
+            "available": available,
+            # What carried in from prior months — negative if the category was
+            # overspent through the end of last month, positive if it had a
+            # leftover balance.
+            "rollover": available - allocated_this_month - spent_this_month,
         }
 
-    # --- YNAB-style credit-card budgeting (changes/021) -------------------
+    # --- envelope-style credit-card budgeting (changes/021) --------------
     # Each auto-created payment category is bound to a card. Its "available"
     # is the cash set aside to pay that card down:
     #   available(P) = Σ(allocations to P)                 [already in own]
@@ -445,11 +462,18 @@ def get_budget():
     card_totals = {}  # payment_cat_id -> display extras
     if account_by_payment_cat:
         card_ids = set(account_by_payment_cat.values())
-        # Sum the three components per card account in one pass each.
+        # Sum the three components per card account in one pass each. Bounded to
+        # transactions posted before the viewed month ends (changes/025) so a
+        # payment envelope's `available` is the cash-to-pay-down as of that
+        # month, consistent with every other category.
         def _by_card(*clauses):
             rows = (
                 db.session.query(Transaction.account_id, db.func.sum(Transaction.amount))
-                .filter(Transaction.account_id.in_(card_ids), *clauses)
+                .filter(
+                    Transaction.account_id.in_(card_ids),
+                    Transaction.posted_at < end,
+                    *clauses,
+                )
                 .group_by(Transaction.account_id)
                 .all()
             )
@@ -497,6 +521,9 @@ def get_budget():
             # group totals its children correctly with no extra code.
             own[pcat_id]["available"] += adj
             own[pcat_id]["spent_this_month"] = Decimal("0")
+            # spent_this_month is forced to 0 for a payment envelope, so its
+            # carry-in is just whatever available isn't this month's allocation.
+            own[pcat_id]["rollover"] = own[pcat_id]["available"] - own[pcat_id]["allocated_this_month"]
             card_totals[pcat_id] = {
                 "card_spending_this_month": str(-month_spend.get(account_id, Decimal("0"))),
                 "card_payments_this_month": str(month_payments.get(account_id, Decimal("0"))),
@@ -505,7 +532,12 @@ def get_budget():
 
     active = []
     archived = []
-    totals = {"budgeted": Decimal("0"), "spent": Decimal("0"), "available": Decimal("0")}
+    totals = {
+        "budgeted": Decimal("0"),
+        "spent": Decimal("0"),
+        "available": Decimal("0"),
+        "rollover": Decimal("0"),
+    }
     for cat in categories:
         o = own[cat.id]
         is_group = cat.parent_id is None and cat.id in group_parent_ids
@@ -515,7 +547,7 @@ def get_budget():
             child_ids = child_ids_by_parent.get(cat.id, [])
             disp = {
                 key: o[key] + sum(own[cid][key] for cid in child_ids)
-                for key in ("allocated_this_month", "spent_this_month", "available")
+                for key in ("allocated_this_month", "spent_this_month", "available", "rollover")
             }
             target = None  # a group can't be allocated to, so a target is meaningless
         elif is_payment:
@@ -542,6 +574,7 @@ def get_budget():
             "allocated_this_month": str(disp["allocated_this_month"]),
             "spent_this_month": str(disp["spent_this_month"]),
             "available": str(disp["available"]),
+            "rollover": str(disp["rollover"]),
             "target": target,
         }
         if is_payment:
@@ -558,6 +591,7 @@ def get_budget():
             if not is_payment:
                 totals["spent"] += o["spent_this_month"]
             totals["available"] += o["available"]
+            totals["rollover"] += o["rollover"]
 
     archived.sort(key=lambda e: e["name"].lower())
 

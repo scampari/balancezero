@@ -1,6 +1,6 @@
 # BalanceZero — spec index
 
-YNAB-style zero-based budgeting app. See `context/mvp-scope.md` for full feature scope and `changes/001-api-spa-rewrite/plan.md` for why the architecture is mid-rewrite (Flask JSON API + React SPA + JWT auth, replacing the original server-rendered/session-cookie app).
+Zero-based (every-dollar) budgeting app. See `context/mvp-scope.md` for full feature scope and `changes/001-api-spa-rewrite/plan.md` for why the architecture is mid-rewrite (Flask JSON API + React SPA + JWT auth, replacing the original server-rendered/session-cookie app).
 
 ## Slices
 

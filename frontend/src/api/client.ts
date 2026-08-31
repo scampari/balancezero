@@ -87,6 +87,10 @@ export interface BudgetCategory {
   allocated_this_month: string
   spent_this_month: string
   available: string
+  // What carried into the viewed month from prior months (changes/025):
+  // negative if the category was overspent through the end of last month,
+  // positive for a leftover balance.
+  rollover: string
   target: CategoryTarget | null
   // Present only on payment categories — month-scoped card activity + the
   // card's (negative) balance, for the payoff-progress line.
@@ -99,6 +103,7 @@ export interface BudgetTotals {
   budgeted: string
   spent: string
   available: string
+  rollover: string
 }
 
 export interface Budget {
