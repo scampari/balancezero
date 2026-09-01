@@ -423,15 +423,18 @@ def get_budget():
             BudgetAllocation.category_id == cat.id,
             BudgetAllocation.month <= month,
         ).scalar() or Decimal("0")
+        # A transaction the user has put in a category is budget-relevant by
+        # that act, even if Plaid tagged it a transfer (changes/028): Venmo,
+        # student-loan and similar payments get auto-flagged `transfer` but
+        # are real spending. The flag still hides *uncategorized* transfers,
+        # which never reach these `category_id == cat.id` queries anyway.
         spent_through_end = db.session.query(db.func.sum(Transaction.amount)).filter(
             Transaction.category_id == cat.id,
-            Transaction.transfer.is_(False),
             Transaction.posted_at < end,
         ).scalar() or Decimal("0")
         spent_this_month = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
             Transaction.category_id == cat.id,
             Account.user_id == user_id,
-            Transaction.transfer.is_(False),
             Transaction.posted_at >= start,
             Transaction.posted_at < end,
         ).scalar() or Decimal("0")
@@ -480,8 +483,7 @@ def get_budget():
 
         normal_card_spend = _by_card(
             Transaction.amount < 0,
-            Transaction.transfer.is_(False),
-            Transaction.category_id.isnot(None),
+            Transaction.category_id.isnot(None),  # categorized => real spend (changes/028)
             Transaction.category_id.notin_(payment_cat_ids),
         )
         card_payments = _by_card(Transaction.transfer.is_(True), Transaction.amount > 0)

@@ -1172,20 +1172,21 @@ def test_get_budget_spent_this_month_is_zero_without_transactions(client, test_u
     assert Decimal(entry["spent_this_month"]) == Decimal("0")
 
 
-def test_get_budget_excludes_transfer_transactions_from_a_category(client, test_user, auth_headers):
-    # changes/019 — a transfer categorized to a spending category must not
-    # show as spend: not in spent_this_month, not in available.
+def test_get_budget_counts_a_categorized_transfer_as_spend(client, test_user, auth_headers):
+    # changes/028 (reverses 019 for this case) — Plaid auto-flags Venmo /
+    # student-loan payments as transfers, but once the user files one under a
+    # spending category it is real spend: it hits spent_this_month + available.
     from decimal import Decimal
 
     cid = _new_category(client, auth_headers, "Groceries")["id"]
     account = _account(test_user.id)
     _txn(account.id, date.today().replace(day=1), "-40.00", category_id=cid)
-    _txn(account.id, date.today().replace(day=1), "-500.00", category_id=cid, transfer=True)
+    _txn(account.id, date.today().replace(day=1), "-25.00", category_id=cid, transfer=True)
     client.post(f"/api/categories/{cid}/allocations", json={"month": CURRENT_MONTH, "amount": "100.00"}, headers=auth_headers)
 
     entry = _budget_entry(client, auth_headers, cid)
-    assert Decimal(entry["spent_this_month"]) == Decimal("-40.00")  # transfer skipped
-    assert Decimal(entry["available"]) == Decimal("60.00")  # 100 allocated - 40 spent
+    assert Decimal(entry["spent_this_month"]) == Decimal("-65.00")  # -40 plus the categorized transfer's -25
+    assert Decimal(entry["available"]) == Decimal("35.00")  # 100 allocated - 65 spent
 
 
 def test_get_budget_ready_to_assign_ignores_a_transfer_marked_income(client, test_user, auth_headers):

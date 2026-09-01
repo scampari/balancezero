@@ -412,16 +412,27 @@ def _add_starting_balance(account, plaid_item):
     )
 
 
-# Plaid `personal_finance_category.primary` values that mean "money moved
-# between the user's own accounts, it wasn't spent or earned" — a bank
-# transfer, or a credit-card payment (which Plaid files under LOAN_PAYMENTS,
-# detail LOAN_PAYMENTS_CREDIT_CARD_PAYMENT).
-_TRANSFER_PRIMARY_CATEGORIES = ("TRANSFER_IN", "TRANSFER_OUT", "LOAN_PAYMENTS")
+# A `transfer` is money that moved between the user's own accounts — not
+# spent, not earned — so budget math ignores it (`spec/budget-api.md`).
+# We read Plaid's `personal_finance_category`:
+#   - TRANSFER_IN / TRANSFER_OUT  → a transfer, EXCEPT peer-to-peer
+#     (`*_P2P`: Venmo, Zelle, PayPal, Cash App), which really does leave the
+#     budget to another person.
+#   - LOAN_PAYMENTS → a transfer only for a credit-card payment
+#     (`LOAN_PAYMENTS_CREDIT_CARD_PAYMENT`). A student / auto / mortgage /
+#     personal loan payment is a real expense (changes/028).
+_TRANSFER_PRIMARY_CATEGORIES = ("TRANSFER_IN", "TRANSFER_OUT")
 
 
 def _is_transfer(plaid_transaction):
     pfc = plaid_transaction.get("personal_finance_category") or {}
-    return pfc.get("primary") in _TRANSFER_PRIMARY_CATEGORIES
+    primary = pfc.get("primary")
+    detail = pfc.get("detail") or ""
+    if primary in _TRANSFER_PRIMARY_CATEGORIES:
+        return not detail.endswith("_P2P")
+    if primary == "LOAN_PAYMENTS":
+        return detail == "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"
+    return False
 
 
 def _plaid_posted_date(plaid_transaction):

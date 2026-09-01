@@ -302,6 +302,10 @@ fallback; the `_should_import` signature change is internal.
 ## Tests
 - `tests/test_plaid_sync.py` § `"test_sync_without_token_returns_401"` —
   covers § error case: no access token.
+- `tests/test_plaid_sync.py` § `"test_sync_flags_transfers_from_personal_finance_category"`
+  — covers § transfer detection (028): plain `TRANSFER_OUT`/`TRANSFER_IN`
+  and `LOAN_PAYMENTS_CREDIT_CARD_PAYMENT` → `transfer=True`; `*_P2P`
+  detail and non-credit-card `LOAN_PAYMENTS` → `transfer=False`.
 - `tests/test_plaid_sync.py` § `"test_sync_as_demo_user_returns_403"` —
   covers § error case: demo user.
 - `tests/test_plaid_sync.py` § `"test_sync_without_connection_returns_409"`
@@ -595,3 +599,14 @@ server-side logging of the swallowed exception in `sync()`.
   (`spec/plaid-connect.md` § update-link-token) and have them track from the
   add-date, not the Item's original connect date. See § Per-account import
   cutoff and `changes/023-add-accounts-update-mode/plan.md`. Not yet built.
+- 028 (2026-09-01) — narrowed transfer detection. `_is_transfer` now
+  reads `personal_finance_category.detail`, not just `primary`: `TRANSFER_IN` /
+  `TRANSFER_OUT` are a transfer unless the detail ends `_P2P` (Venmo, Zelle,
+  PayPal, Cash App — money that leaves the budget to someone else), and
+  `LOAN_PAYMENTS` is a transfer only for `LOAN_PAYMENTS_CREDIT_CARD_PAYMENT`
+  (a student / auto / mortgage / personal loan payment is a real expense).
+  On the next sync `_upsert_transaction` overwrites `transfer` from the
+  payload, so previously mis-flagged rows self-heal. Paired with
+  `spec/budget-api.md` 028 (a categorized transfer still counts as spend).
+  `tests/test_plaid_sync.py` `test_sync_flags_transfers_from_personal_finance_category`
+  expanded. `changes/028-transfer-flag-respects-category`.
