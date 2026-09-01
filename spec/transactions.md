@@ -19,14 +19,18 @@ Lets a user see their transactions and assign them to a budget category (or unca
 ### GET /api/transactions
 
 **Setup:** An authenticated user with at least one account, some transactions posted in the current month (a mix of categorized and uncategorized), and at least one transaction in a different month.
-**Action:** `GET /api/transactions` (optionally `?month=YYYY-MM-01`), `Authorization: Bearer <access token>`.
-**Input:** Optional `month` query param (ISO date, first of month). Defaults to the current month if omitted, same convention as `GET /api/budget`.
-**Expected output:** `200`, JSON `{"month": "...", "transactions": [{"id": ..., "account_id": ..., "category_id": ..., "category_name": ..., "is_income": ..., "posted_at": "...", "amount": "...", "description": "...", "pending": ...}]}`. Only transactions posted within the requested month, only across the authenticated user's own accounts. `category_id`/`category_name` are `null` for uncategorized transactions. `is_income` is `true` only for transactions explicitly marked "To Be Budgeted" — always `false` for any transaction that has a `category_id`, by construction (mutual exclusivity, see § PATCH). Ordered most-recent-first.
+**Action:** `GET /api/transactions` (optionally `?month=YYYY-MM-01` **or** `?since=YYYY-MM-DD`), `Authorization: Bearer <access token>`.
+**Input:** Two mutually-exclusive optional filters:
+- `since` (ISO date) — a **rolling window** (changes/027): every transaction posted **on or after** that date, no upper bound. This is what the frontend transactions page uses (a fixed number of days back from the viewer's *local* today), so entries don't vanish the instant a calendar month rolls over.
+- `month` (ISO date, first of month) — a single calendar month, same convention as `GET /api/budget`.
+- If both are given, `since` wins. If neither is given, defaults to the current month (server-local).
+**Expected output:** `200`, JSON `{<echo>, "transactions": [{"id": ..., "account_id": ..., "category_id": ..., "category_name": ..., "is_income": ..., "posted_at": "...", "amount": "...", "description": "...", "pending": ...}]}` where `<echo>` is `"since": "YYYY-MM-DD"` when the `since` filter was used, otherwise `"month": "YYYY-MM-01"`. Only transactions matching the filter, only across the authenticated user's own accounts. `category_id`/`category_name` are `null` for uncategorized transactions. `is_income` is `true` only for transactions explicitly marked "To Be Budgeted" — always `false` for any transaction that has a `category_id`, by construction (mutual exclusivity, see § PATCH). Ordered most-recent-first.
 **Side effects:** None (read-only).
 
 #### Error cases
 - **When no/invalid access token, Then** `401`.
 - **When `month` is present but not a valid ISO date, Then** `400`.
+- **When `since` is present but not a valid ISO date, Then** `400`.
 
 ### PATCH /api/transactions/<int:transaction_id>
 
@@ -104,6 +108,9 @@ still has it and changes it, you probably want it back).
 - `tests/test_transactions.py` § `"test_list_transactions_only_shows_own_accounts"` — covers § per-user isolation.
 - `tests/test_transactions.py` § `"test_list_transactions_without_token_returns_401"` — covers § GET error case: no token.
 - `tests/test_transactions.py` § `"test_list_transactions_invalid_month_returns_400"` — covers § GET error case: invalid month.
+- `tests/test_transactions.py` § `"test_list_transactions_since_returns_rolling_window"` — covers § GET `since` filter: on-or-after, no upper bound, echoes `since` not `month` (changes/027).
+- `tests/test_transactions.py` § `"test_list_transactions_since_takes_precedence_over_month"` — covers § GET both-filters precedence.
+- `tests/test_transactions.py` § `"test_list_transactions_invalid_since_returns_400"` — covers § GET error case: invalid `since`.
 - `tests/test_transactions.py` § `"test_patch_transaction_assigns_category"` — covers § PATCH contract (assign).
 - `tests/test_transactions.py` § `"test_patch_transaction_uncategorizes_with_null"` — covers § PATCH contract (uncategorize).
 - `tests/test_transactions.py` § `"test_patch_transaction_without_token_returns_401"` — covers § PATCH error case: no token.
@@ -166,3 +173,12 @@ still has it and changes it, you probably want it back).
   real transaction posts. Behavior + contract live in `spec/plaid-sync.md`
   § Manual-transaction adoption; no endpoint behavior changes here, no new
   test in `tests/test_transactions.py`.
+- 027 (2026-09-01) — `GET /api/transactions` gains a `?since=YYYY-MM-DD`
+  rolling-window filter (on-or-after, no upper bound); response echoes
+  `since` instead of `month` when it is used. `month` still works and still
+  the no-arg default. The frontend transactions page now requests a 60-day
+  window anchored to the viewer's *local* today, so rows don't disappear
+  when a calendar month rolls over (and the budget's "current month" is
+  likewise computed from local time, not UTC — see `frontend/src/lib/dates.ts`).
+  `transactions_api.py` `list_transactions` only; `tests/test_transactions.py`
+  +3. `changes/027-local-time-and-rolling-transactions`.

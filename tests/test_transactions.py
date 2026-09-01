@@ -135,6 +135,52 @@ def test_list_transactions_invalid_month_returns_400(client, test_user, auth_hea
     assert response.status_code == 400
 
 
+def test_list_transactions_since_returns_rolling_window(client, test_user, auth_headers):
+    # changes/027 — `since` is a rolling window: on-or-after, no upper bound,
+    # spanning month boundaries. Old transactions drop off; recent ones stay.
+    from datetime import timedelta
+
+    account = _make_account(test_user.id)
+    today = date.today()
+    old = _make_transaction(account.id, today - timedelta(days=120), "-9.00", "Ancient")
+    recent = _make_transaction(account.id, today - timedelta(days=40), "-8.00", "Six weeks back")
+    now = _make_transaction(account.id, today, "-7.00", "Today")
+
+    since = (today - timedelta(days=60)).isoformat()
+    response = client.get(f"/api/transactions?since={since}", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["since"] == since
+    assert "month" not in body
+    ids = {t["id"] for t in body["transactions"]}
+    assert recent.id in ids and now.id in ids
+    assert old.id not in ids
+
+
+def test_list_transactions_since_takes_precedence_over_month(client, test_user, auth_headers):
+    # changes/027 — if both filters arrive, `since` wins.
+    from datetime import timedelta
+
+    account = _make_account(test_user.id)
+    recent = _make_transaction(account.id, date.today() - timedelta(days=10), "-3.00", "Recent")
+
+    since = (date.today() - timedelta(days=30)).isoformat()
+    response = client.get(
+        f"/api/transactions?since={since}&month={LAST_MONTH.isoformat()}", headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["since"] == since
+    assert any(t["id"] == recent.id for t in body["transactions"])
+
+
+def test_list_transactions_invalid_since_returns_400(client, test_user, auth_headers):
+    response = client.get("/api/transactions?since=not-a-date", headers=auth_headers)
+    assert response.status_code == 400
+
+
 # ---------------------------------------------------------------------------
 # PATCH /api/transactions/<id>
 # ---------------------------------------------------------------------------
