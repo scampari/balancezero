@@ -158,12 +158,27 @@ export interface TransactionEntry {
 }
 
 export interface TransactionsResponse {
-  month: string
+  // Exactly one of these is echoed back, depending on the query used.
+  month?: string
+  since?: string
   transactions: TransactionEntry[]
 }
 
-export async function getTransactions(accessToken: string, month?: string): Promise<TransactionsResponse> {
-  const qs = month ? `?month=${encodeURIComponent(month)}` : ''
+// `month` = a single calendar month; `since` = a rolling window of everything
+// posted on or after that date (changes/027). Pass at most one.
+export interface TransactionsQuery {
+  month?: string
+  since?: string
+}
+
+export async function getTransactions(
+  accessToken: string,
+  query: TransactionsQuery = {},
+): Promise<TransactionsResponse> {
+  const params = new URLSearchParams()
+  if (query.since) params.set('since', query.since)
+  else if (query.month) params.set('month', query.month)
+  const qs = params.toString() ? `?${params}` : ''
   const res = await request(`/transactions${qs}`, { method: 'GET' }, accessToken)
   await throwIfError(res)
   return res.json()
@@ -484,9 +499,9 @@ export function getBudgetWithAutoRefresh(
 export function getTransactionsWithAutoRefresh(
   accessToken: string,
   onTokenRefreshed: (token: string) => void,
-  month?: string,
+  query: TransactionsQuery = {},
 ): Promise<TransactionsResponse> {
-  return withAutoRefresh((token) => getTransactions(token, month), accessToken, onTokenRefreshed)
+  return withAutoRefresh((token) => getTransactions(token, query), accessToken, onTokenRefreshed)
 }
 
 export function patchTransactionCategoryWithAutoRefresh(

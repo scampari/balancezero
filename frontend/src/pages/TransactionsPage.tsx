@@ -14,6 +14,11 @@ import {
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { AppShell, PageLoading } from '../components/AppShell'
+import { localDateDaysAgo, localDateKey } from '../lib/dates'
+
+// The transactions list is a rolling window rather than a single calendar
+// month, so nothing vanishes when the month rolls over (changes/027).
+const ROLLING_WINDOW_DAYS = 60
 
 function formatMoney(value: string): string {
   return Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
@@ -24,7 +29,7 @@ function formatDate(value: string): string {
 }
 
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
+  return localDateKey()
 }
 
 // Sentinel select value for "To Be Budgeted" — distinct from '' (Uncategorized)
@@ -150,7 +155,9 @@ export function TransactionsPage() {
   const load = useCallback(
     (token: string) =>
       Promise.all([
-        getTransactionsWithAutoRefresh(token, setAccessToken),
+        getTransactionsWithAutoRefresh(token, setAccessToken, {
+          since: localDateDaysAgo(ROLLING_WINDOW_DAYS),
+        }),
         getBudgetWithAutoRefresh(token, setAccessToken),
         listAccountsWithAutoRefresh(token, setAccessToken),
       ]).then(([transactionsData, budgetData, accountsData]) => {
@@ -239,7 +246,10 @@ export function TransactionsPage() {
     <AppShell>
       <CategoryDatalist categories={assignableCategories} />
       <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold tracking-tight text-(--color-text)">Transactions</h1>
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-(--color-text)">Transactions</h1>
+          <p className="text-xs text-(--color-text-faint)">Last {ROLLING_WINDOW_DAYS} days</p>
+        </div>
         <button
           type="button"
           onClick={() => {
@@ -313,7 +323,7 @@ export function TransactionsPage() {
 
       {transactions.length === 0 ? (
         <div className="rounded-xl border border-(--color-border) bg-(--color-surface) px-4 py-10 text-center text-sm text-(--color-text-faint)">
-          No transactions this month.
+          No transactions in the last {ROLLING_WINDOW_DAYS} days.
         </div>
       ) : (
         <>

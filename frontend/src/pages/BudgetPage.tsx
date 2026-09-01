@@ -12,6 +12,7 @@ import {
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { AppShell, PageLoading } from '../components/AppShell'
+import { localMonthKey } from '../lib/dates'
 
 type Category = Budget['categories'][number]
 
@@ -30,8 +31,9 @@ function availableColor(value: number): string {
 
 // The budget is separated by month (changes/025). The viewed month is a
 // "YYYY-MM" key held in the URL (?month=), absent for the current month.
+// "current" is the viewer's *local* month, not UTC (changes/027).
 function currentMonthKey(): string {
-  return new Date().toISOString().slice(0, 7)
+  return localMonthKey()
 }
 
 function shiftMonth(key: string, delta: number): string {

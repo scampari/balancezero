@@ -37,6 +37,33 @@ def _serialize(transaction, category_name):
 @transactions_bp.route("/transactions", methods=["GET"])
 @jwt_required()
 def list_transactions():
+    user_id = _current_user_id()
+
+    base = (
+        db.session.query(Transaction, Category.name)
+        .join(Account, Transaction.account_id == Account.id)
+        .outerjoin(Category, Transaction.category_id == Category.id)
+        .filter(Account.user_id == user_id)
+    )
+
+    # `since` = a rolling window: everything posted on or after that date, no
+    # upper bound (changes/027 — so nothing vanishes when the month rolls
+    # over). Takes precedence over `month` if both are somehow given.
+    since_param = request.args.get("since")
+    if since_param is not None:
+        since = _parse_month(since_param)  # date.fromisoformat — accepts any ISO date
+        if since is None:
+            return jsonify({"error": "since must be a valid ISO date"}), 400
+        rows = base.filter(Transaction.posted_at >= since).order_by(
+            Transaction.posted_at.desc()
+        ).all()
+        return jsonify(
+            {
+                "since": since.isoformat(),
+                "transactions": [_serialize(txn, name) for txn, name in rows],
+            }
+        ), 200
+
     month_param = request.args.get("month")
     if month_param:
         month = _parse_month(month_param)
@@ -46,16 +73,9 @@ def list_transactions():
         month = date.today().replace(day=1)
 
     start, end = _month_bounds(month)
-    user_id = _current_user_id()
-
-    rows = (
-        db.session.query(Transaction, Category.name)
-        .join(Account, Transaction.account_id == Account.id)
-        .outerjoin(Category, Transaction.category_id == Category.id)
-        .filter(Account.user_id == user_id, Transaction.posted_at >= start, Transaction.posted_at < end)
-        .order_by(Transaction.posted_at.desc())
-        .all()
-    )
+    rows = base.filter(
+        Transaction.posted_at >= start, Transaction.posted_at < end
+    ).order_by(Transaction.posted_at.desc()).all()
 
     return jsonify(
         {
