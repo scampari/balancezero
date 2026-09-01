@@ -33,7 +33,7 @@ where each `<entry>` is `{"id": ..., "name": "...", "parent_id": ... | null, "po
 
 - `categories` holds only non-archived categories, ordered by `(position, id)`; `archived_categories` holds only archived ones, ordered by name. `archived` is `true` on every entry in the second list, `false` in the first.
 - **Category groups (changes/014 — reverses the earlier "no roll-up"):** a top-level category with at least one non-archived child is a **group**. Its entry has `"is_group": true` and its `allocated_this_month` / `spent_this_month` / `available` are the **sum of its non-archived children's** values plus any of the parent's own legacy amounts (so money budgeted before the split doesn't vanish). `target` is `null` for a group. A group cannot be allocated to (`POST /api/categories/<id>/allocations` → `400`) or have transactions assigned to it (`PATCH` / `POST /api/transactions` → `400`). A leaf category (has a parent, or a top-level with no children) is unchanged: `"is_group": false`, its own numbers, editable. `totals` still sums each category's *own* values, so a group and its children are never double-counted.
-- `allocated_this_month` = the category's `BudgetAllocation.allocated_amount` for the requested `month` (or `"0"`). `spent_this_month` = signed `SUM(Transaction.amount)` for the category within the requested month (outflows negative).
+- `allocated_this_month` = the category's `BudgetAllocation.allocated_amount` for the requested `month` (or `"0"`). `spent_this_month` = signed `SUM(Transaction.amount)` for the category within the requested month (outflows negative). **A transaction that has a `category_id` counts here even if `transfer` is `true` (changes/028)** — putting it in a category is the user asserting it is real spending (Venmo, student-loan payments and the like get auto-flagged `transfer` by Plaid). The `transfer` flag now only suppresses *uncategorized* transactions, and `income_total` (see `ready_to_assign`) still ignores every `transfer` row.
 - **`available` and `rollover` are month-bounded (changes/025 — supersedes the 006 "cumulative, not month-scoped" rule).** For the viewed month `M` (with `end` = first day of `M+1`): `available` = `SUM(allocations WHERE month <= M) + SUM(signed transactions WHERE posted_at < end)` — the envelope balance as of the end of `M`. Activity dated in any later month is not visible. `rollover` = `available − allocated_this_month − spent_this_month` = what carried in from months before `M` (negative if the category was overspent through the end of the prior month, positive for a leftover balance). Overspending therefore rolls forward inside the category; it never touches `ready_to_assign`.
 - `totals` = the sum of `allocated_this_month` / `spent_this_month` / `available` / `rollover` over `categories` only (archived excluded).
 - `target` is `null` when the category has no active target (`superseded_at IS NULL` row in `CategoryTarget`). `monthly_target_amount` is unchanged from the 005 contract — `target_amount` as-is for `monthly`, else `target_amount ÷ months remaining` — a progress-blind baseline. The 006 progress fields: `months_remaining` is `1` for `monthly`, else whole calendar months from the current month through the horizon inclusive (`target_date`'s month for `custom`, December for `yearly`). `funded` is what's already set aside — `allocated_this_month` for `monthly`, else `max(0, available)`. `needed_this_month` is what to assign now to stay on pace — `max(0, target_amount − funded)` for `monthly`, else `max(0, (target_amount − funded) ÷ months_remaining)`, rounded to cents. `progress` is `min(1, funded ÷ target_amount)` (4 dp).
@@ -305,3 +305,15 @@ No delete endpoint exists — categories are archived, never removed, so their h
   tests replaced with `test_get_budget_ready_to_assign_is_global_across_months`
   and `test_get_budget_future_allocation_reduces_ready_to_assign_now`.
   `changes/026-global-ready-to-assign`.
+- 028 (2026-09-01) — a categorized transaction always counts as spend, even
+  if `transfer` is `true`. The per-category `spent_this_month` /
+  `spent_through_end` (and the credit-card `normal_card_spend`) queries drop
+  their `transfer.is_(False)` filter — they are already scoped to a
+  `category_id`, so this only affects rows the user explicitly categorized.
+  `income_total` / `ready_to_assign` still exclude every `transfer` row.
+  Paired with `spec/plaid-sync.md` 028: Plaid `_is_transfer` no longer flags
+  peer-to-peer (`*_P2P`) or non-credit-card `LOAN_PAYMENTS`. `budget_api.py`
+  `get_budget` only; `tests/test_budget_api.py`
+  `test_get_budget_excludes_transfer_transactions_from_a_category` flipped to
+  `test_get_budget_counts_a_categorized_transfer_as_spend`.
+  `changes/028-transfer-flag-respects-category`.

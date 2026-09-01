@@ -625,21 +625,35 @@ def test_sync_flags_transfers_from_personal_finance_category(client, test_user, 
             return _mock_sync_response(added=[
                 {"transaction_id": "xfer-1", "account_id": "acc-x", "amount": 200.0,
                  "date": "2026-08-10", "name": "Transfer to savings", "pending": False,
-                 "personal_finance_category": {"primary": "TRANSFER_OUT"}},
-                {"transaction_id": "pay-1", "account_id": "acc-x", "amount": 150.0,
+                 "personal_finance_category": {"primary": "TRANSFER_OUT",
+                                              "detail": "TRANSFER_OUT_ACCOUNT_TRANSFER"}},
+                {"transaction_id": "ccpay-1", "account_id": "acc-x", "amount": 150.0,
                  "date": "2026-08-11", "name": "AUTOPAY CREDIT CARD", "pending": False,
-                 "personal_finance_category": {"primary": "LOAN_PAYMENTS"}},
+                 "personal_finance_category": {"primary": "LOAN_PAYMENTS",
+                                              "detail": "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"}},
+                # changes/028 — these two were transfers under 019 but aren't now.
+                {"transaction_id": "venmo-1", "account_id": "acc-x", "amount": 30.0,
+                 "date": "2026-08-12", "name": "Venmo to Alex", "pending": False,
+                 "personal_finance_category": {"primary": "TRANSFER_OUT",
+                                              "detail": "TRANSFER_OUT_P2P"}},
+                {"transaction_id": "loan-1", "account_id": "acc-x", "amount": 400.0,
+                 "date": "2026-08-13", "name": "DEPT OF EDUCATION", "pending": False,
+                 "personal_finance_category": {"primary": "LOAN_PAYMENTS",
+                                              "detail": "LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT"}},
                 {"transaction_id": "buy-1", "account_id": "acc-x", "amount": 12.0,
-                 "date": "2026-08-12", "name": "COFFEE", "pending": False,
-                 "personal_finance_category": {"primary": "FOOD_AND_DRINK"}},
+                 "date": "2026-08-14", "name": "COFFEE", "pending": False,
+                 "personal_finance_category": {"primary": "FOOD_AND_DRINK",
+                                              "detail": "FOOD_AND_DRINK_COFFEE"}},
             ])
 
     _patch_client(monkeypatch, _Mixed())
     assert client.post("/api/plaid/sync", headers=auth_headers).status_code == 200
 
     by_id = {t.plaid_transaction_id: t for t in Transaction.query.filter_by(account_id=account.id).all()}
-    assert by_id["xfer-1"].transfer is True
-    assert by_id["pay-1"].transfer is True
+    assert by_id["xfer-1"].transfer is True    # own-account transfer
+    assert by_id["ccpay-1"].transfer is True   # credit-card payment
+    assert by_id["venmo-1"].transfer is False  # peer-to-peer leaves the budget
+    assert by_id["loan-1"].transfer is False   # student loan is a real expense
     assert by_id["buy-1"].transfer is False
 
 
