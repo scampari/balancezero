@@ -307,7 +307,10 @@ def _upsert_account(user, plaid_account, plaid_item):
     db.session.flush()  # so a same-page transaction upsert can use account.id
     if is_new:
         _add_starting_balance(account, plaid_item)
-    if account.type == "credit":
+    # A card the user is paying down (changes/029) gets no envelope — its
+    # former payment category, if any, was converted to a plain one and
+    # must not be recreated here.
+    if account.type == "credit" and not account.debt_payoff:
         _ensure_payment_category(user, account)
     return account
 

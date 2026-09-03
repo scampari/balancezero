@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 
 from api_helpers import current_user_id
 from models import Account, Category, Transaction, db
@@ -237,7 +237,13 @@ def get_reports():
     if category_id_set is not None:
         extra_filters.append(Transaction.category_id.in_(category_id_set))
     if exclude_transfers:
-        extra_filters.append(Transaction.transfer.is_(False))
+        # changes/029 — hide only *uncategorized* transfers. Once the user
+        # files a transfer under a category it is real spending (matches
+        # spec/budget-api.md 028). `exclude_transfers=false` still returns
+        # everything.
+        extra_filters.append(
+            or_(Transaction.transfer.is_(False), Transaction.category_id.isnot(None))
+        )
 
     def _q(*columns):
         return (

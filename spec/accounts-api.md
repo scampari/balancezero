@@ -197,8 +197,11 @@ state survives a page reload (read back from `GET /api/accounts`).
   account type + a PATCH call, and a credit-only "Paying this off" toggle
   on `/accounts` (`AccountsPage.tsx`); budget-side effects in
   `spec/budget-api.md` 029, sync-side in `spec/plaid-sync.md` 029, reports
-  in `spec/reports-api.md` 029. `changes/029-credit-card-debt-payoff`. Not
-  yet built.
+  in `spec/reports-api.md` 029. `changes/029-credit-card-debt-payoff`.
+  Built 2026-09-03 — migration `3f1c9a2b7d84`; `PATCH` route +
+  `_serialize_account` in `accounts_api.py`;
+  `budget_api.convert_payment_category_to_plain`. All 13 accounts cases +
+  the 6 budget cases green; `get_budget` unchanged.
 - 018 (2026-08-27) — serializer gains `type` / `subtype` from the new
   `Account` columns. `tests/test_accounts_api.py` §
   `"test_list_accounts_includes_type_and_subtype"`.
