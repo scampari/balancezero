@@ -136,6 +136,38 @@ def _pack_siblings(user_id, parent_id):
         sibling.position = index
 
 
+def convert_payment_category_to_plain(payment_category):
+    """changes/029 — a card flagged `debt_payoff` loses its envelope. Turn
+    its bound payment `Category` into an ordinary top-level category: unbind
+    the card, move it to the end of the top level (positions re-packed), and
+    keep its name + every allocation. If that leaves its former "Credit Card
+    Payments" group with no non-archived children, archive the group.
+
+    Caller commits. Runs as a server-side effect of PATCH /api/accounts/<id>,
+    so it is not subject to the public PATCH /api/categories payment-category
+    guard (by the time the caller commits, this row is no longer one)."""
+    user_id = payment_category.user_id
+    old_parent_id = payment_category.parent_id
+
+    payment_category.payment_account_id = None
+    payment_category.parent_id = None
+    db.session.flush()
+    # Land last among the top-level siblings, then normalize both groups —
+    # same shape as the reparent path in patch_category.
+    payment_category.position = len(_sibling_group(user_id, None))
+    if old_parent_id is not None:
+        _pack_siblings(user_id, old_parent_id)
+    _pack_siblings(user_id, None)
+
+    if old_parent_id is not None:
+        group = db.session.get(Category, old_parent_id)
+        if group is not None and not Category.query.filter_by(
+            parent_id=group.id, archived=False
+        ).first():
+            group.archived = True
+    db.session.flush()
+
+
 @budget_bp.route("/categories", methods=["POST"])
 @jwt_required()
 def create_category():

@@ -49,6 +49,13 @@ class Account(db.Model):
     balance = db.Column(db.Numeric(12, 2), nullable=False, default=0)
     available_balance = db.Column(db.Numeric(12, 2), nullable=True)
     balance_date = db.Column(db.DateTime, nullable=True)
+    # Opt-in "I'm paying this card down" flag (changes/029). Only meaningful
+    # for a `type == "credit"` account. When true the card gets no auto
+    # "Credit Card Payments" envelope and is left out of get_budget's
+    # credit-card fold — its debt lives in `balance` alone, out of the
+    # budget, and payments count as ordinary categorized spend. Set only via
+    # PATCH /api/accounts/<id>; never touched by sync.
+    debt_payoff = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     transactions = db.relationship("Transaction", backref="account", cascade="all, delete-orphan")
