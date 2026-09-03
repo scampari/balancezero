@@ -392,4 +392,6 @@ No delete endpoint exists — categories are archived, never removed, so their h
   line and appears top-level. Covered by the existing budget e2e; a
   `seed_e2e_budget.py` converted-card row + one assertion is enough.
   `client.ts` `BudgetCategory` unchanged (fields already optional).
-  `changes/029-credit-card-debt-payoff`. Tests locked red; not yet built.
+  `changes/029-credit-card-debt-payoff`. Built 2026-09-03 — `budget_api.py`
+  needed no logic change (only the new `convert_payment_category_to_plain`
+  helper, called from the accounts route); all 6 budget cases green.

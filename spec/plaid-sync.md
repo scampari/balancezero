@@ -630,5 +630,6 @@ server-side logging of the swallowed exception in `sync()`.
   - `tests/test_plaid_sync.py` § `"test_sync_skips_payment_category_for_a_debt_payoff_card"`
     — covers § the two-credit-account contract (flagged card gets/keeps no
     payment category across two syncs; the non-flagged card still does).
-    Committed red 2026-09-03 (`TypeError` — the `debt_payoff` column is
-    absent). `changes/029-credit-card-debt-payoff`. Not yet built.
+    `changes/029-credit-card-debt-payoff`. Built 2026-09-03 — one-line
+    guard in `_upsert_account`: `account.type == "credit" and not
+    account.debt_payoff`.

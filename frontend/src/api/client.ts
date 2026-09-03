@@ -305,10 +305,28 @@ export interface Account {
   // Our own PlaidItem row id (not a Plaid identifier). Null for demo/manual
   // accounts and for accounts whose institution was unlinked.
   plaid_item_id: number | null
+  // changes/029 — "I'm paying this card down." Only meaningful for a
+  // `type === 'credit'` account. When true the card has no "Credit Card
+  // Payments" envelope; its payments count as ordinary categorized spend.
+  debt_payoff: boolean
 }
 
 export async function listAccounts(accessToken: string): Promise<{ accounts: Account[] }> {
   const res = await request('/accounts', { method: 'GET' }, accessToken)
+  await throwIfError(res)
+  return res.json()
+}
+
+export async function setAccountDebtPayoff(
+  accessToken: string,
+  accountId: number,
+  debtPayoff: boolean,
+): Promise<{ account: Account }> {
+  const res = await request(
+    `/accounts/${accountId}`,
+    { method: 'PATCH', body: JSON.stringify({ debt_payoff: debtPayoff }) },
+    accessToken,
+  )
   await throwIfError(res)
   return res.json()
 }
@@ -599,6 +617,19 @@ export function listAccountsWithAutoRefresh(
   onTokenRefreshed: (token: string) => void,
 ): Promise<{ accounts: Account[] }> {
   return withAutoRefresh((token) => listAccounts(token), accessToken, onTokenRefreshed)
+}
+
+export function setAccountDebtPayoffWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  accountId: number,
+  debtPayoff: boolean,
+): Promise<{ account: Account }> {
+  return withAutoRefresh(
+    (token) => setAccountDebtPayoff(token, accountId, debtPayoff),
+    accessToken,
+    onTokenRefreshed,
+  )
 }
 
 export function triggerPlaidSyncWithAutoRefresh(

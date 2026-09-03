@@ -1,7 +1,7 @@
 # Slicing: opt-in "debt payoff" mode for a credit card
 
 > Date: 2026-09-03
-> Status: building (red tests locked 2026-09-03)
+> Status: complete (built 2026-09-03)
 
 ## What & Why
 A linked credit card that the user is *paying down* (not floating this
@@ -226,6 +226,33 @@ Build order: `spec/accounts-api.md` first (column + migration + PATCH +
 conversion), then the `_ensure_payment_category` guard, then reports, then
 the frontend toggle. `budget_api.py` needs no logic change — its 6 tests
 should pass once conversion lands.
+
+## Build result
+
+Built 2026-09-03 (inline). All slices green; `budget_api.py` needed no
+logic change, exactly as planned.
+
+- Slice 1 — `models.py` `Account.debt_payoff` + migration `3f1c9a2b7d84`;
+  `accounts_api.py` `_serialize_account` + `PATCH /api/accounts/<id>`;
+  `budget_api.convert_payment_category_to_plain` (mirrors the
+  `patch_category` reparent path, then archives an emptied group).
+- Slice 2 — `plaid_api._upsert_account`: `_ensure_payment_category` gated
+  on `not account.debt_payoff`.
+- Slice 3 — `reports_api.py`: `exclude_transfers` →
+  `or_(transfer.is_(False), category_id.isnot(None))`.
+- Slice 4 — `client.ts` `Account.debt_payoff` + `setAccountDebtPayoff`;
+  `AccountsPage.tsx` credit-only `role="switch"` "Paying this off" toggle.
+  Reworded the helper copy ("automatic payment envelope", not "Credit Card
+  Payments") after it collided with `plaid-institutions.spec.ts`'s
+  `getByText('Credit Card')`.
+
+Backend: 296 passed / 7 skipped. Frontend: `tsc -b` clean, `oxlint` clean
+(2 pre-existing warnings). E2E: `accounts.spec.ts` green + full suite green
+(one pre-existing intermittent flake seen once, not reproduced).
+
+Migration note: neither `pytest` (conftest `create_all`) nor the e2e suite
+(`seed_e2e.py` `create_all`) exercises `3f1c9a2b7d84` — it needs
+`flask db upgrade` against the real DB on deploy.
 
 ## Grill
 

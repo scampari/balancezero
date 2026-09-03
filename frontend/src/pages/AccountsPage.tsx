@@ -7,6 +7,7 @@ import {
   getPlaidStatusWithAutoRefresh,
   listAccountsWithAutoRefresh,
   removePlaidItemWithAutoRefresh,
+  setAccountDebtPayoffWithAutoRefresh,
   triggerPlaidSyncWithAutoRefresh,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -70,6 +71,7 @@ export function AccountsPage() {
   const [syncResult, setSyncResult] = useState<PlaidSyncResult | null>(null)
   const [syncError, setSyncError] = useState<string | null>(null)
   const [removingId, setRemovingId] = useState<number | null>(null)
+  const [debtPayoffPendingId, setDebtPayoffPendingId] = useState<number | null>(null)
 
   const loadAccounts = useCallback(
     (token: string) =>
@@ -139,6 +141,23 @@ export function AccountsPage() {
         setSyncError(err instanceof Error ? err.message : 'Could not remove that institution.')
       } finally {
         setRemovingId(null)
+      }
+    },
+    [accessToken, setAccessToken, loadAccounts],
+  )
+
+  const handleToggleDebtPayoff = useCallback(
+    async (accountId: number, next: boolean) => {
+      if (!accessToken) return
+      setDebtPayoffPendingId(accountId)
+      setSyncError(null)
+      try {
+        await setAccountDebtPayoffWithAutoRefresh(accessToken, setAccessToken, accountId, next)
+        await loadAccounts(accessToken)
+      } catch (err) {
+        setSyncError(err instanceof Error ? err.message : 'Could not update that account.')
+      } finally {
+        setDebtPayoffPendingId(null)
       }
     },
     [accessToken, setAccessToken, loadAccounts],
@@ -257,6 +276,36 @@ export function AccountsPage() {
                       <p className="mt-3 text-xs text-(--color-text-faint)">
                         {account.balance_date ? `Updated ${formatDate(account.balance_date)}` : 'Never synced'}
                       </p>
+                      {account.type === 'credit' && (
+                        <div className="mt-3 border-t border-(--color-border) pt-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-xs font-medium text-(--color-text)">Paying this off</span>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={account.debt_payoff}
+                              aria-label="Paying this off"
+                              disabled={debtPayoffPendingId === account.id}
+                              onClick={() =>
+                                void handleToggleDebtPayoff(account.id, !account.debt_payoff)
+                              }
+                              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-60 ${
+                                account.debt_payoff ? 'bg-(--color-accent)' : 'bg-(--color-border)'
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-(--color-surface) shadow transition-transform ${
+                                  account.debt_payoff ? 'translate-x-4' : 'translate-x-0.5'
+                                }`}
+                              />
+                            </button>
+                          </div>
+                          <p className="mt-1 text-xs text-(--color-text-faint)">
+                            Its payments count as spending in a category you choose, instead of the
+                            automatic payment envelope.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )
                 })}

@@ -158,8 +158,11 @@ Definitions (consistent with `budget_api`):
   becomes `transfer = false OR category_id IS NOT NULL`, matching
   `spec/budget-api.md` 028 (a categorized transfer is real spending).
   `exclude_transfers=false` is unchanged (everything in). One SQL clause in
-  `reports_api.py`; `tests/test_reports_api.py` gains 2–3 cases. Part of
-  `changes/029-credit-card-debt-payoff`. Not yet built.
+  `reports_api.py`; `tests/test_reports_api.py`
+  `test_reports_default_includes_a_categorized_transfer`. Part of
+  `changes/029-credit-card-debt-payoff`. Built 2026-09-03 — the
+  `exclude_transfers` filter is now
+  `or_(Transaction.transfer.is_(False), Transaction.category_id.isnot(None))`.
 - 020 (2026-08-27) — customization. `GET /api/reports` gains `grain`
   (`week`/`month`/`quarter`/`year`, default `month`), `accounts`,
   `categories` (a group id expands to its non-archived children), and
