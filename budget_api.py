@@ -165,7 +165,6 @@ def convert_payment_category_to_plain(payment_category):
             parent_id=group.id, archived=False
         ).first():
             group.archived = True
-    db.session.flush()
 
 
 @budget_bp.route("/categories", methods=["POST"])
