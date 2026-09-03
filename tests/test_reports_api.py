@@ -298,3 +298,38 @@ def test_reports_excludes_transfers_by_default_and_includes_on_request(client, t
 def test_reports_echoes_grain_in_filters(client, test_user, auth_headers):
     body = client.get("/api/reports?grain=quarter", headers=auth_headers).get_json()
     assert body["filters"]["grain"] == "quarter"
+
+
+# ---------------------------------------------------------------------------
+# exclude_transfers only hides UNCATEGORIZED transfers (changes/029).
+# Traces to spec/reports-api.md § "exclude_transfers cases (changes/029)".
+# ---------------------------------------------------------------------------
+
+
+def test_reports_default_includes_a_categorized_transfer(client, test_user, auth_headers, groceries):
+    # Arrange — two transfers: one filed under Groceries, one loose.
+    _seed(
+        test_user,
+        [
+            ("2026-02-01", -40, "COFFEE", False, None),
+            ("2026-02-02", -100, "VENMO RENT SPLIT", False, groceries.id),
+            ("2026-02-03", -300, "TO SAVINGS", False, None),
+        ],
+        transfer_descriptions=("VENMO RENT SPLIT", "TO SAVINGS"),
+    )
+
+    body = client.get("/api/reports?from=2026-02&to=2026-02", headers=auth_headers).get_json()
+
+    # The categorized transfer counts as spend; the uncategorized one does not.
+    assert body["filters"]["exclude_transfers"] is True
+    assert body["income_vs_expense"][0]["expense"] == "140.00"  # 40 coffee + 100 categorized transfer
+    by_cat = {row["category"]: row["total"] for row in body["spending_by_category"]}
+    assert by_cat.get("Groceries") == "100.00"
+    merchants = {m["description"] for m in body["top_merchants"]}
+    assert "VENMO RENT SPLIT" in merchants
+    assert "TO SAVINGS" not in merchants
+
+
+# Spec cases 2 (uncategorized transfer still excluded by default) and 3
+# (exclude_transfers=false includes everything) are "unchanged from 020" and
+# already pinned by test_reports_excludes_transfers_by_default_and_includes_on_request.

@@ -1130,3 +1130,48 @@ def test_sync_preserves_is_income_when_adopting_a_manual_row(
     assert manual.is_income is True
     assert manual.category_id is None
     assert manual.amount == Decimal("2500.00")
+
+
+# ---------------------------------------------------------------------------
+# _ensure_payment_category skipped for debt-payoff cards (changes/029)
+# Traces to spec/plaid-sync.md § "029 ... _ensure_payment_category is
+# skipped for debt-payoff cards".
+# ---------------------------------------------------------------------------
+
+
+def test_sync_skips_payment_category_for_a_debt_payoff_card(client, test_user, auth_headers, monkeypatch):
+    from models import Category
+
+    item = _seed_item(test_user, "item-029")
+    # Card A — already flagged debt-payoff, its old payment category already
+    # converted (payment_account_id NULL, top-level).
+    card_a = Account(
+        user_id=test_user.id, name="Payoff Card", type="credit", subtype="credit card",
+        plaid_account_id="acc-a", plaid_item_id=item.id, debt_payoff=True,
+    )
+    db.session.add(card_a)
+    db.session.flush()
+    db.session.add(Category(user_id=test_user.id, name="Payoff Card", position=5))  # the converted category
+    # Card B — an ordinary float card in the same institution / sync.
+    card_b = Account(
+        user_id=test_user.id, name="Float Card", type="credit", subtype="credit card",
+        plaid_account_id="acc-b", plaid_item_id=item.id,
+    )
+    db.session.add(card_b)
+    db.session.commit()
+
+    class _TwoCards:
+        def transactions_sync(self, *_a, **_k):
+            return _sync_response_with_accounts([
+                _mock_account("acc-a", 500.00, name="Payoff Card", type="credit", subtype="credit card"),
+                _mock_account("acc-b", 300.00, name="Float Card", type="credit", subtype="credit card"),
+            ])
+
+    _patch_client(monkeypatch, _TwoCards())
+
+    # Two syncs — the flagged card must never get (or regain) a payment category.
+    assert client.post("/api/plaid/sync", headers=auth_headers).status_code == 200
+    assert client.post("/api/plaid/sync", headers=auth_headers).status_code == 200
+
+    assert Category.query.filter_by(payment_account_id=card_a.id).count() == 0
+    assert Category.query.filter_by(payment_account_id=card_b.id).count() == 1

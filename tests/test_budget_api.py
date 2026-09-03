@@ -1706,3 +1706,173 @@ def test_card_activity_after_the_viewed_month_is_excluded_from_payment_available
 
     entry = _budget_entry(client, auth_headers, payment_cat.id)
     assert Decimal(entry["available"]) == Decimal("40.00")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/budget — debt-payoff cards are carved out of the 021 envelope
+# model (changes/029). Traces to spec/budget-api.md § "Debt-payoff cards
+# (029 — carves an exception into 021)".
+# ---------------------------------------------------------------------------
+
+
+def _patch_account(client, auth_headers, account_id, **body):
+    return client.patch(f"/api/accounts/{account_id}", json=body, headers=auth_headers)
+
+
+def _credit_card_with_payment_category(user_id, card_name="Old Card", balance="0"):
+    from decimal import Decimal
+
+    from models import Account, Category
+
+    account = Account(
+        user_id=user_id, name=card_name, type="credit", subtype="credit card", balance=Decimal(balance)
+    )
+    db.session.add(account)
+    db.session.flush()
+    group = Category(user_id=user_id, name="Credit Card Payments", position=90)
+    db.session.add(group)
+    db.session.flush()
+    payment_cat = Category(
+        user_id=user_id, name=card_name, parent_id=group.id, position=0, payment_account_id=account.id
+    )
+    db.session.add(payment_cat)
+    db.session.commit()
+    return account, payment_cat, group
+
+
+def test_debt_payoff_card_has_no_payment_envelope(client, test_user, auth_headers, credit_account):
+    from decimal import Decimal
+
+    card, _payment_cat, _group = credit_account
+
+    _patch_account(client, auth_headers, card.id, debt_payoff=True)
+
+    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    assert not any(c["is_payment_category"] for c in body["categories"])
+    for c in body["categories"] + body["archived_categories"]:
+        assert "card_balance" not in c
+        assert "card_spending_this_month" not in c
+
+
+def test_converting_a_funded_payment_category_steps_available_up_by_the_debt(
+    client, test_user, auth_headers
+):
+    from decimal import Decimal
+
+    # Arrange — a card carrying a -$1000 debt (opening balance) with $200
+    # already allocated toward paying it off.
+    card, payment_cat, _group = _credit_card_with_payment_category(test_user.id, balance="-1000")
+    _card_txn(card.id, "-1000.00", description="Starting Balance", plaid_transaction_id=None)
+    _allocate(client, auth_headers, payment_cat.id, "200.00")
+
+    before_entry = _budget_entry(client, auth_headers, payment_cat.id)
+    before_totals = client.get(
+        f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers
+    ).get_json()["totals"]
+    assert Decimal(before_entry["available"]) == Decimal("-800.00")  # -1000 opening + 200 allocated
+
+    # Act — flip the card to debt-payoff.
+    assert _patch_account(client, auth_headers, card.id, debt_payoff=True).status_code == 200
+
+    # Assert — the debt drops out; the category is now an ordinary top-level
+    # envelope holding just its allocation.
+    after_entry = _budget_entry(client, auth_headers, payment_cat.id)
+    after_totals = client.get(
+        f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers
+    ).get_json()["totals"]
+    assert after_entry["is_payment_category"] is False
+    assert Decimal(after_entry["available"]) == Decimal("200.00")
+    assert Decimal(after_totals["available"]) - Decimal(before_totals["available"]) == Decimal("1000.00")
+
+
+def test_debt_payoff_card_purchase_is_single_sided(client, test_user, auth_headers, credit_account):
+    from decimal import Decimal
+
+    # Arrange — a converted card, and an ordinary funded spending category.
+    card, _payment_cat, _group = credit_account
+    _patch_account(client, auth_headers, card.id, debt_payoff=True)
+    shopping = _new_category(client, auth_headers, "Shopping")["id"]
+    _allocate(client, auth_headers, shopping, "100.00")
+    baseline = Decimal(
+        client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()["totals"]["available"]
+    )
+
+    # Act — a $30 purchase on the converted card, filed to Shopping.
+    _card_txn(card.id, "-30.00", category_id=shopping, description="SPLURGE", plaid_transaction_id="s1")
+
+    # Assert — Shopping absorbs it, and there is no payment envelope adding
+    # $30 back: totals.available falls by the full $30 (unlike a float card).
+    entry = _budget_entry(client, auth_headers, shopping)
+    assert Decimal(entry["spent_this_month"]) == Decimal("-30.00")
+    assert Decimal(entry["available"]) == Decimal("70.00")
+    after = Decimal(
+        client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()["totals"]["available"]
+    )
+    assert baseline - after == Decimal("30.00")
+    body = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    assert not any(c["is_payment_category"] for c in body["categories"])
+
+
+def test_categorized_payment_outflow_counts_in_the_converted_category(
+    client, test_user, auth_headers, credit_account
+):
+    from decimal import Decimal
+
+    # Arrange — convert the card, fund the (now ordinary) payoff category.
+    card, payment_cat, _group = credit_account
+    _patch_account(client, auth_headers, card.id, debt_payoff=True)
+    _allocate(client, auth_headers, payment_cat.id, "300.00")
+
+    # A credit-card payment: a transfer=true outflow on checking, filed to
+    # the payoff category. changes/028 makes a categorized transfer count.
+    checking = _account(test_user.id, name="Checking")
+    _txn(
+        checking.id,
+        date.today().replace(day=1),
+        "-250.00",
+        category_id=payment_cat.id,
+        description="AUTOPAY CREDIT CARD",
+        transfer=True,
+    )
+
+    # Assert
+    entry = _budget_entry(client, auth_headers, payment_cat.id)
+    assert Decimal(entry["spent_this_month"]) == Decimal("-250.00")
+    assert Decimal(entry["available"]) == Decimal("50.00")  # 300 allocated - 250 paid
+
+
+def test_debt_payoff_conversion_archives_an_emptied_payments_group_in_the_budget(
+    client, test_user, auth_headers, credit_account
+):
+    card, payment_cat, group = credit_account
+
+    _patch_account(client, auth_headers, card.id, debt_payoff=True)
+
+    budget = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    active_ids = {c["id"] for c in budget["categories"]}
+    assert group.id not in active_ids
+    assert group.id in {c["id"] for c in budget["archived_categories"]}
+    converted = next(c for c in budget["categories"] if c["id"] == payment_cat.id)
+    assert converted["parent_id"] is None
+
+
+def test_ready_to_assign_unchanged_by_debt_payoff_conversion(
+    client, test_user, auth_headers, credit_account
+):
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    checking = _account(test_user.id, name="Checking")
+    _txn(checking.id, date.today().replace(day=1), "1000.00", is_income=True, description="Payroll")
+    _allocate(client, auth_headers, payment_cat.id, "200.00")
+
+    before = Decimal(client.get("/api/budget", headers=auth_headers).get_json()["ready_to_assign"])
+    assert _patch_account(client, auth_headers, card.id, debt_payoff=True).status_code == 200
+    # The conversion really happened (allocations kept, category reparented)…
+    converted = _budget_entry(client, auth_headers, payment_cat.id)
+    assert converted["is_payment_category"] is False
+    assert Decimal(converted["allocated_this_month"]) == Decimal("200.00")
+    # …and it did not move the global assignable pool.
+    after = Decimal(client.get("/api/budget", headers=auth_headers).get_json()["ready_to_assign"])
+    assert before == Decimal("800.00")  # 1000 income - 200 allocated
+    assert after == before
