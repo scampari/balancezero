@@ -171,17 +171,50 @@ No delete endpoint exists — categories are archived, never removed, so their h
   (Σ of `−amount`), `cc_payments` = transfer inflows onto the card, and
   `cc_opening` = the card's synthetic negative `"Starting Balance"`. The
   card **purchase still counts as spend in its own spending category** — it
-  is *not* also subtracted here; the two net out in `totals.available` (one
-  envelope down, the payment envelope up). `totals.spent` **skips** payment
-  categories; `totals.budgeted` / `totals.available` include them.
-  `ready_to_assign` is unaffected (the moves touch neither `is_income` rows
-  nor allocations). The `"Credit Card Payments"` group rolls its children
-  up via the existing 014 mechanism (adjustments are folded into each
-  child's `available` before the roll-up).
+  is *not* also subtracted here; for a card **not** flagged `debt_payoff`
+  the two net out in `totals.available` (one envelope down, the payment
+  envelope up). `totals.spent` **skips** payment categories;
+  `totals.budgeted` / `totals.available` include them. `ready_to_assign` is
+  unaffected (the moves touch neither `is_income` rows nor allocations).
+  The `"Credit Card Payments"` group rolls its children up via the existing
+  014 mechanism (adjustments are folded into each child's `available`
+  before the roll-up).
   **Guards:** assigning a transaction to a payment category → `400`
   (`spec/transactions.md`); `PATCH /api/categories/<id>` changing
   `name` / `parent_id` / `archived` on one → `400` (`position` allowed);
   `POST .../allocations` to one is **allowed** (that's how you fund payoff).
+- **Debt-payoff cards (029 — carves an exception into 021):** a
+  `type == "credit"` `Account` with `debt_payoff = true`
+  (`spec/accounts-api.md`) has **no** payment envelope. `get_budget` needs
+  no special branch for it — the account is simply absent from
+  `account_by_payment_cat` (its former payment `Category` was converted:
+  `payment_account_id` cleared, reparented top-level), so it never enters
+  the `_by_card` fold. Consequences:
+  - `cc_opening` (the card's negative `"Starting Balance"`), `moved_in`,
+    and `cc_payments` are **not** folded anywhere — the card's debt lives
+    only in `Account.balance`, out of budget math entirely.
+  - The converted category is an ordinary top-level leaf:
+    `is_payment_category = false`, no `card_*` fields, `spent_this_month`
+    computed the normal way, a `target` allowed.
+  - At the moment of conversion (`PATCH /api/accounts/<id>` →
+    `debt_payoff: true`) that category's `available` — and
+    `totals.available` — **step up by**
+    `|cc_opening| + moved_in − cc_payments` (the fold that vanishes). For a
+    card whose only card-side rows are a `−$X` opening and `$P` of prior
+    payments, with `$A` allocated to payoff, `available` goes from
+    `A − X + P` to just `A`. This jump is intended: the debt has left the
+    budget.
+  - A later purchase charged to a `debt_payoff` card is **single-sided** —
+    it lowers its own spending category and `totals.available` with no
+    offsetting payment-envelope credit (contrast the non-flagged card,
+    which nets to zero).
+  - A payment is counted as spend the ordinary way: the payer-side outflow
+    (still `transfer = true` — `_is_transfer` is unchanged) is filed to the
+    converted category (or any category) and counts via the changes/028
+    rule (a categorized transaction counts even when `transfer` is `true`).
+  - `ready_to_assign` is unchanged by conversion — the allocations that
+    funded the payment envelope are kept verbatim, so `income_total −
+    total_allocated` is identical before and after.
 
 ## Tests
 - `tests/test_budget_api.py` § `"test_create_category_with_valid_name_returns_201"` — covers § POST /api/categories contract.
@@ -317,3 +350,46 @@ No delete endpoint exists — categories are archived, never removed, so their h
   `test_get_budget_excludes_transfer_transactions_from_a_category` flipped to
   `test_get_budget_counts_a_categorized_transfer_as_spend`.
   `changes/028-transfer-flag-respects-category`.
+- 029 (2026-09-03) — contract landed by test-planning. Debt-payoff cards
+  (`Account.debt_payoff`, `spec/accounts-api.md`) are carved out of the 021
+  envelope model: their converted payment `Category` has no
+  `payment_account_id`, so `get_budget` drops it from `account_by_payment_cat`
+  and the `_by_card` fold with **no new branch**. `spec/reports-api.md` 029
+  aligns `exclude_transfers` with the 028 rule. `budget_api.py` unchanged
+  except the reworded 021 comment scoping "the two net out" to non-flagged
+  cards. Tests (committed red 2026-09-03) in `tests/test_budget_api.py`:
+  - `test_debt_payoff_card_has_no_payment_envelope` — after `PATCH
+    /api/accounts/<id>` `debt_payoff: true`, `GET /api/budget` returns no
+    `is_payment_category` entry for that card and no `card_*` fields.
+  - `test_converting_a_funded_payment_category_steps_available_up_by_the_debt`
+    — card balance `−$1000`, `"Starting Balance" −$1000`, payment category
+    with a `$200` `CURRENT_MONTH` allocation → `available` `−$800` before;
+    after the PATCH the same category is top-level with `available`
+    `$200.00`, `is_payment_category` false, and `totals.available` rose by
+    `$1000.00`.
+  - `test_debt_payoff_card_purchase_is_single_sided` — a `−$30` purchase on
+    a converted card filed to a normal allocated category lowers that
+    category and `totals.available` by `30`, with no payment-envelope
+    credit (contrast
+    `test_card_purchase_leaves_totals_available_identical_to_a_cash_purchase`).
+  - `test_categorized_payment_outflow_counts_in_the_converted_category` — a
+    `transfer = true` `−$250` outflow on checking filed to the converted
+    (top-level) payoff category shows `spent_this_month == −250.00` and
+    reduces its `available` (the changes/028 path, on a non-payment
+    category).
+  - `test_debt_payoff_conversion_archives_an_emptied_payments_group_in_the_budget`
+    — with the `credit_account` fixture (single card), after the PATCH the
+    `"Credit Card Payments"` group is in `archived_categories` and the
+    converted category is top-level. (The shared-group-stays-active case
+    lives in `tests/test_accounts_api.py` §
+    `"test_patch_account_debt_payoff_keeps_a_shared_payments_group_active"`.)
+  - `test_ready_to_assign_unchanged_by_debt_payoff_conversion` — the
+    conversion happened (allocation kept, `is_payment_category` false) yet
+    `ready_to_assign` is identical before and after the PATCH.
+  Frontend: `BudgetPage.tsx` already renders any entry with
+  `is_payment_category = false` as a normal row, so a converted card needs
+  no new branch — it just stops showing the card badges / payment-envelope
+  line and appears top-level. Covered by the existing budget e2e; a
+  `seed_e2e_budget.py` converted-card row + one assertion is enough.
+  `client.ts` `BudgetCategory` unchanged (fields already optional).
+  `changes/029-credit-card-debt-payoff`. Tests locked red; not yet built.

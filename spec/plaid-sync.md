@@ -610,3 +610,25 @@ server-side logging of the swallowed exception in `sync()`.
   `spec/budget-api.md` 028 (a categorized transfer still counts as spend).
   `tests/test_plaid_sync.py` `test_sync_flags_transfers_from_personal_finance_category`
   expanded. `changes/028-transfer-flag-respects-category`.
+- 029 (2026-09-03) — contract landed by test-planning. `_ensure_payment_category`
+  is **skipped for debt-payoff cards**: `_upsert_account` calls it only when
+  `account.type == "credit" and not account.debt_payoff`. `_is_transfer` and
+  every other sync behavior is unchanged — a credit-card payment is still
+  flagged `transfer` (the budget counts it once the user files it to a
+  category, `spec/budget-api.md` 029). Contract:
+  - **Setup:** a synced `PlaidItem` whose payload includes two
+    `type == "credit"` accounts — one whose local `Account.debt_payoff` is
+    already `true` (e.g. converted earlier via `PATCH /api/accounts`, so its
+    old payment `Category` now has `payment_account_id IS NULL`), one with
+    `debt_payoff = false`.
+  - **Action:** `POST /api/plaid/sync`.
+  - **Expected:** after sync, **no** `Category` has `payment_account_id`
+    pointing at the flagged account, and no `"Credit Card Payments"` group is
+    created on its behalf; the `debt_payoff = false` account still gets its
+    payment category (unchanged 021 behavior). Re-running the sync does not
+    resurrect the flagged card's payment category.
+  - `tests/test_plaid_sync.py` § `"test_sync_skips_payment_category_for_a_debt_payoff_card"`
+    — covers § the two-credit-account contract (flagged card gets/keeps no
+    payment category across two syncs; the non-flagged card still does).
+    Committed red 2026-09-03 (`TypeError` — the `debt_payoff` column is
+    absent). `changes/029-credit-card-debt-payoff`. Not yet built.
