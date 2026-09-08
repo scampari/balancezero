@@ -270,6 +270,50 @@ export async function setAllocation(
   return res.json()
 }
 
+export interface MoveSide {
+  category_id: number
+  allocated_amount: string
+  available: string
+}
+
+export interface MoveAllocationResult {
+  month: string
+  amount: string
+  /** null when the money came from Ready to Assign rather than an envelope. */
+  from: MoveSide | null
+  to: MoveSide
+}
+
+/**
+ * Cover an overspent envelope by moving money into it (changes/030).
+ * `fromCategoryId` of null draws on Ready to Assign instead of another
+ * envelope. The server rejects a move the source can't fund, so this can
+ * throw an ApiError the caller should show rather than swallow.
+ */
+export async function moveAllocation(
+  accessToken: string,
+  fromCategoryId: number | null,
+  toCategoryId: number,
+  month: string,
+  amount: string,
+): Promise<MoveAllocationResult> {
+  const res = await request(
+    '/allocations/move',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        from_category_id: fromCategoryId,
+        to_category_id: toCategoryId,
+        month,
+        amount,
+      }),
+    },
+    accessToken,
+  )
+  await throwIfError(res)
+  return res.json()
+}
+
 export interface SetTargetInput {
   target_type: TargetType
   target_amount: string
@@ -607,6 +651,21 @@ export function setAllocationWithAutoRefresh(
 ): Promise<{ category_id: number; month: string; allocated_amount: string }> {
   return withAutoRefresh(
     (token) => setAllocation(token, categoryId, month, amount),
+    accessToken,
+    onTokenRefreshed,
+  )
+}
+
+export function moveAllocationWithAutoRefresh(
+  accessToken: string,
+  onTokenRefreshed: (token: string) => void,
+  fromCategoryId: number | null,
+  toCategoryId: number,
+  month: string,
+  amount: string,
+): Promise<MoveAllocationResult> {
+  return withAutoRefresh(
+    (token) => moveAllocation(token, fromCategoryId, toCategoryId, month, amount),
     accessToken,
     onTokenRefreshed,
   )

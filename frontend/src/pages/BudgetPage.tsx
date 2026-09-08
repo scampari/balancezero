@@ -6,6 +6,7 @@ import {
   type TargetType,
   createCategoryWithAutoRefresh,
   getBudgetWithAutoRefresh,
+  moveAllocationWithAutoRefresh,
   patchCategoryWithAutoRefresh,
   setAllocationWithAutoRefresh,
   setCategoryTargetWithAutoRefresh,
@@ -129,6 +130,14 @@ export function BudgetPage() {
   const [targetError, setTargetError] = useState<string | null>(null)
   const [isSavingTarget, setIsSavingTarget] = useState(false)
   const [collapsed, setCollapsed] = useState<Set<number>>(readCollapsed)
+  // Covering an overspent envelope (changes/030). `coveringId` is the
+  // category being covered — the dialog's destination, fixed by the button
+  // that opened it. A null source means Ready to Assign.
+  const [coveringId, setCoveringId] = useState<number | null>(null)
+  const [coverSourceId, setCoverSourceId] = useState<number | null>(null)
+  const [coverAmount, setCoverAmount] = useState('')
+  const [coverError, setCoverError] = useState<string | null>(null)
+  const [isCovering, setIsCovering] = useState(false)
 
   function toggleCollapse(categoryId: number) {
     setCollapsed((prev) => {
@@ -275,6 +284,47 @@ export function BudgetPage() {
     await loadBudget(accessToken)
   }
 
+  function openCover(category: Category) {
+    setCoveringId(category.id)
+    // Default to Ready to Assign — covering from unassigned money is the
+    // natural fix when the pool is positive, and it costs no other envelope.
+    setCoverSourceId(null)
+    // Pre-fill exactly what brings the envelope back to zero.
+    setCoverAmount(Math.abs(Number(category.available)).toFixed(2))
+    setCoverError(null)
+  }
+
+  function closeCover() {
+    setCoveringId(null)
+    setCoverError(null)
+  }
+
+  async function submitCover(event: SyntheticEvent) {
+    event.preventDefault()
+    if (!accessToken || coveringId == null || isCovering) return
+    setIsCovering(true)
+    setCoverError(null)
+    try {
+      await moveAllocationWithAutoRefresh(
+        accessToken,
+        setAccessToken,
+        coverSourceId,
+        coveringId,
+        monthDate,
+        coverAmount,
+      )
+      await loadBudget(accessToken)
+      setCoveringId(null)
+    } catch (err) {
+      // The server rejects a move the source can't fund, and writes nothing
+      // when it does. Keep the dialog open so the user can pick another
+      // source rather than losing what they typed.
+      setCoverError(err instanceof Error ? err.message : 'Could not move the money.')
+    } finally {
+      setIsCovering(false)
+    }
+  }
+
   function commitRename(categoryId: number) {
     const name = renameDraft.trim()
     setRenamingId(null)
@@ -295,6 +345,16 @@ export function BudgetPage() {
   // envelopes — you can't file a category or a transaction under it.
   const isPaymentGroup = (c: Category) =>
     budget.categories.some((k) => k.parent_id === c.id && k.is_payment_category)
+  // Overspent = a leaf envelope in the red for the viewed month. Groups are
+  // excluded because they aren't allocatable — a group alert would carry a
+  // button with nothing to do. Archived categories aren't in this list at all.
+  const overspent = budget.categories.filter((c) => !c.is_group && Number(c.available) < 0)
+  const covering = overspent.find((c) => c.id === coveringId) ?? null
+  // Only offer sources that can actually fund the move; anything else just
+  // produces the server's rejection.
+  const coverSources = budget.categories.filter(
+    (c) => !c.is_group && c.id !== coveringId && Number(c.available) > 0,
+  )
   const parentChoices = topLevel.filter((c) => !isPaymentGroup(c))
   const moveTargets = parentChoices // a category can only be re-parented under a top-level one
 
@@ -446,7 +506,7 @@ export function BudgetPage() {
               </div>
               <div className="flex flex-col gap-0.5 sm:contents">
                 <span className={STAT_LABEL}>Available</span>
-                <span className={`${NUM_CELL} font-medium ${availableColor(available)}`}>
+                <span data-available className={`${NUM_CELL} font-medium ${availableColor(available)}`}>
                   {formatMoney(category.available)}
                 </span>
               </div>
@@ -682,6 +742,7 @@ export function BudgetPage() {
         <p className="text-xs font-medium text-(--color-text-muted)">Ready to Assign</p>
         <p
           data-testid="ready-to-assign"
+          data-ready-to-assign
           className={`tabular-nums mt-1 text-3xl font-semibold tracking-tight sm:text-4xl ${
             readyToAssign < 0 ? 'text-(--color-negative)' : 'text-(--color-accent)'
           }`}
@@ -689,6 +750,119 @@ export function BudgetPage() {
           {formatMoney(budget.ready_to_assign)}
         </p>
       </div>
+
+      {overspent.length > 0 && (
+        <div
+          data-overspend-banner
+          role="alert"
+          className="mb-6 rounded-xl border border-(--color-negative)/30 bg-(--color-negative)/10 p-4 sm:mb-8 sm:p-5"
+        >
+          <p className="text-sm font-medium text-(--color-negative)">
+            {overspent.length} {overspent.length === 1 ? 'envelope is' : 'envelopes are'} overspent
+          </p>
+          <p className="mt-0.5 text-xs text-(--color-text-muted)">
+            Move money in to bring {overspent.length === 1 ? 'it' : 'them'} back to zero.
+          </p>
+          <ul className="mt-3 flex flex-col gap-2">
+            {overspent.map((category) => (
+              <li
+                key={category.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-(--color-surface) px-3 py-2"
+              >
+                <span className="text-sm font-medium text-(--color-text)">{category.name}</span>
+                <span className="flex items-center gap-3">
+                  <span className="tabular-nums text-sm font-medium text-(--color-negative)">
+                    {formatMoney(category.available)}
+                  </span>
+                  {/* The row already names the category, so the visible label
+                      stays short — the accessible name carries the full
+                      "Cover Groceries" so each button is distinguishable. */}
+                  <button
+                    type="button"
+                    aria-label={`Cover ${category.name}`}
+                    onClick={() => openCover(category)}
+                    className="rounded-md border border-(--color-border) px-2.5 py-1 text-xs font-medium text-(--color-text) transition-colors hover:bg-(--color-surface-hover)"
+                  >
+                    Cover
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {covering && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <form
+            role="dialog"
+            aria-label={`Cover ${covering.name}`}
+            onSubmit={submitCover}
+            className="w-full max-w-sm rounded-xl border border-(--color-border) bg-(--color-surface) p-5"
+          >
+            <h2 className="text-sm font-medium text-(--color-text)">Cover {covering.name}</h2>
+            <p className="mt-0.5 text-xs text-(--color-text-muted)">
+              Overspent by {formatMoney(String(Math.abs(Number(covering.available))))}.
+            </p>
+
+            <label className="mt-4 flex flex-col gap-1">
+              <span className="text-xs font-medium text-(--color-text-muted)">Cover from</span>
+              <select
+                aria-label="Cover from"
+                value={coverSourceId == null ? '' : String(coverSourceId)}
+                onChange={(event) =>
+                  setCoverSourceId(event.target.value === '' ? null : Number(event.target.value))
+                }
+                className="rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1.5 text-sm text-(--color-text)"
+              >
+                {readyToAssign > 0 && <option value="">Ready to Assign</option>}
+                {coverSources.map((source) => (
+                  <option key={source.id} value={source.id}>
+                    {source.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="mt-3 flex flex-col gap-1">
+              <span className="text-xs font-medium text-(--color-text-muted)">Amount to move</span>
+              <span className="flex items-center gap-1.5">
+                <span aria-hidden className="text-sm text-(--color-text-faint)">$</span>
+                <input
+                  aria-label="Amount to move"
+                  inputMode="decimal"
+                  value={coverAmount}
+                  onChange={(event) => setCoverAmount(event.target.value)}
+                  className="w-full rounded-md border border-(--color-border) bg-(--color-bg) px-2 py-1.5 text-sm tabular-nums text-(--color-text)"
+                />
+              </span>
+            </label>
+
+            {coverError && (
+              <p role="alert" className="mt-3 text-xs text-(--color-negative)">
+                {coverError}
+              </p>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeCover}
+                className="rounded-md px-3 py-1.5 text-xs font-medium text-(--color-text-muted) transition-colors hover:text-(--color-text)"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isCovering}
+                className="rounded-md bg-(--color-accent) px-3 py-1.5 text-xs font-medium text-(--color-on-accent) transition-opacity disabled:opacity-60"
+              >
+                Move money
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-medium text-(--color-text-muted)">Categories</h2>

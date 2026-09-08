@@ -183,4 +183,9 @@ All 6 confirmed red before commit — no banner, no Cover button, no `[data-read
   /api/allocations/move`; `client.ts` gains `moveAllocation` +
   `moveAllocationWithAutoRefresh`. No new API field — overspent is
   derived from the budget the page already fetches.
-  `changes/030-overspend-cover/plan.md`.
+  `changes/030-overspend-cover/plan.md`. **Built 2026-09-08** — all 6 e2e
+  cases green; full e2e suite 38 passed, backend 323 passed / 7 skipped.
+  The Cover button's visible label is just "Cover" (the banner row already
+  names the category); the full "Cover <name>" lives in its `aria-label`,
+  which is what the tests match on and what keeps the buttons
+  distinguishable. Verified by hand in light and dark themes.
