@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import IntegrityError
 
+from api_helpers import category_has_children
 from api_helpers import current_user_id as _current_user_id
 from api_helpers import month_bounds as _month_bounds
 from api_helpers import parse_month as _parse_month
@@ -116,6 +117,108 @@ def _get_owned_category(category_id):
     if category.user_id != _current_user_id():
         return None, (jsonify({"error": "forbidden"}), 403)
     return category, None
+
+
+def _payment_envelope_adjustment(payment_category, end):
+    """The credit-card fold on a payment envelope's balance (changes/021):
+    spending moved onto the card, less payments made against it, plus the
+    card's negative opening balance. See `get_budget` for the full derivation
+    — this is the same formula for a single card."""
+    account_id = payment_category.payment_account_id
+    payment_cat_ids = {
+        cid
+        for (cid,) in db.session.query(Category.id).filter(
+            Category.user_id == payment_category.user_id,
+            Category.payment_account_id.isnot(None),
+        )
+    }
+
+    def _sum(*clauses):
+        return db.session.query(db.func.sum(Transaction.amount)).filter(
+            Transaction.account_id == account_id,
+            Transaction.posted_at < end,
+            *clauses,
+        ).scalar() or Decimal("0")
+
+    moved_in = -_sum(  # outflows are negative
+        Transaction.amount < 0,
+        Transaction.category_id.isnot(None),  # categorized => real spend (changes/028)
+        Transaction.category_id.notin_(payment_cat_ids),
+    )
+    payments = _sum(Transaction.transfer.is_(True), Transaction.amount > 0)
+    opening = _sum(
+        Transaction.description == "Starting Balance",
+        Transaction.plaid_transaction_id.is_(None),
+    )
+    return moved_in - payments + opening
+
+
+def category_available(category, month):
+    """The envelope balance for `category` as of the end of `month` — month-
+    bounded per changes/025, with the credit-card fold applied for a payment
+    envelope.
+
+    `get_budget` and the move endpoint's guard both call this, so the figure a
+    move is checked against is by construction the one the budget page shows.
+    A guard that re-derived it from the raw allocation sum would read `0` for a
+    payment envelope holding real cash and reject a legitimate move — see
+    `spec/budget-api.md`'s move contract."""
+    _start, end = _month_bounds(month)
+    allocated_through = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
+        BudgetAllocation.category_id == category.id,
+        BudgetAllocation.month <= month,
+    ).scalar() or Decimal("0")
+    spent_through_end = db.session.query(db.func.sum(Transaction.amount)).filter(
+        Transaction.category_id == category.id,
+        Transaction.posted_at < end,
+    ).scalar() or Decimal("0")
+    available = allocated_through + spent_through_end
+    if category.payment_account_id:
+        available += _payment_envelope_adjustment(category, end)
+    return available
+
+
+def ready_to_assign(user_id):
+    """All-time income minus every allocation ever made, for any month — one
+    global figure identical on every month (changes/026). Assigning into a
+    future month debits this pool now, so the same dollars can never look
+    assignable twice."""
+    income_total = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
+        Account.user_id == user_id,
+        Transaction.is_income.is_(True),
+        Transaction.transfer.is_(False),
+    ).scalar() or Decimal("0")
+    total_allocated = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
+        BudgetAllocation.user_id == user_id,
+    ).scalar() or Decimal("0")
+    return income_total - total_allocated
+
+
+def _adjust_allocation(category, month, delta):
+    """Add `delta` to the category's allocation for `month`, creating the row
+    if there isn't one. Unlike set_allocation this may leave the row negative
+    — see `move_allocation` for why that is allowed here and nowhere else."""
+    allocation = BudgetAllocation.query.filter_by(category_id=category.id, month=month).first()
+    if allocation is None:
+        allocation = BudgetAllocation(
+            user_id=category.user_id, category_id=category.id, month=month, allocated_amount=Decimal("0")
+        )
+        db.session.add(allocation)
+    allocation.allocated_amount = allocation.allocated_amount + delta
+    return allocation
+
+
+def _move_side(category, month):
+    """One end of a completed move, as the move response reports it. Carries
+    enough for the caller to update that row without refetching the budget."""
+    allocated = db.session.query(BudgetAllocation.allocated_amount).filter_by(
+        category_id=category.id, month=month
+    ).scalar() or Decimal("0")
+    return {
+        "category_id": category.id,
+        "allocated_amount": str(allocated),
+        "available": str(category_available(category, month)),
+    }
 
 
 def _sibling_group(user_id, parent_id):
@@ -396,6 +499,81 @@ def set_allocation(category_id):
     ), 200
 
 
+@budget_bp.route("/allocations/move", methods=["POST"])
+@jwt_required()
+def move_allocation():
+    """Move money between two envelopes in one month, or from ready_to_assign
+    into one (changes/030). The user-facing action is "cover" an overspent
+    category; see context/budget-glossary.md for why it is not called a
+    transfer.
+
+    A move is zero-sum across allocations, so ready_to_assign and totals are
+    unchanged by construction when both sides are categories. The source row
+    is allowed to go negative -- the deliberate carve-out from
+    set_allocation's zero-or-positive rule, because an envelope's carried-in
+    rollover lives outside allocated_this_month and is the balance a user most
+    often reaches for.
+    """
+    data = request.get_json(silent=True) or {}
+    to_category_id = data.get("to_category_id")
+    from_category_id = data.get("from_category_id")
+
+    if to_category_id is None or "month" not in data or "amount" not in data:
+        return jsonify({"error": "to_category_id, month and amount are required"}), 400
+
+    month = _parse_month(data["month"])
+    if month is None:
+        return jsonify({"error": "month must be a valid ISO date"}), 400
+    amount = _parse_positive_amount(data["amount"])
+    if amount is None:
+        return jsonify({"error": "amount must be a positive decimal"}), 400
+    if from_category_id is not None and from_category_id == to_category_id:
+        return jsonify({"error": "cannot move money to the same category"}), 400
+
+    destination, error = _get_owned_category(to_category_id)
+    if error:
+        return error
+    source = None
+    if from_category_id is not None:
+        source, error = _get_owned_category(from_category_id)
+        if error:
+            return error
+
+    # Groups total their children and are not allocatable, so they can be
+    # neither end of a move -- same rule as set_allocation. Archived envelopes
+    # are out of the budget view entirely; money moved into one would vanish
+    # from the page that is supposed to show it.
+    for category, role in ((source, "source"), (destination, "destination")):
+        if category is None:
+            continue
+        if category.archived:
+            return jsonify({"error": f"the {role} category is archived"}), 400
+        if category_has_children(category.id):
+            return jsonify({"error": f"the {role} category is a group"}), 400
+
+    # The guard that makes the negative-row carve-out safe: you can only move
+    # money that is actually there, so a move can never create a *new*
+    # overspent category. Rejected before any write, since a partial write
+    # would leave the two envelopes out of balance.
+    if source is None:
+        if ready_to_assign(_current_user_id()) < amount:
+            return jsonify({"error": "not enough money left to assign"}), 400
+    elif category_available(source, month) < amount:
+        return jsonify({"error": "the source category does not hold that much"}), 400
+
+    _adjust_allocation(destination, month, amount)
+    if source is not None:
+        _adjust_allocation(source, month, -amount)
+    db.session.commit()
+
+    return jsonify({
+        "month": month.isoformat(),
+        "amount": str(amount),
+        "from": None if source is None else _move_side(source, month),
+        "to": _move_side(destination, month),
+    }), 200
+
+
 @budget_bp.route("/budget", methods=["GET"])
 @jwt_required()
 def get_budget():
@@ -418,15 +596,7 @@ def get_budget():
     # into a future month debits this pool right now, so the same dollars can
     # never look assignable in two different months. Only the per-category
     # `available` / `rollover` numbers are month-bounded (see below).
-    income_total = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
-        Account.user_id == user_id,
-        Transaction.is_income.is_(True),
-        Transaction.transfer.is_(False),
-    ).scalar() or Decimal("0")
-    total_allocated = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
-        BudgetAllocation.user_id == user_id,
-    ).scalar() or Decimal("0")
-    ready_to_assign = income_total - total_allocated
+    assignable = ready_to_assign(user_id)
 
     categories = (
         Category.query.filter_by(user_id=user_id).order_by(Category.position, Category.id).all()
@@ -447,29 +617,21 @@ def get_budget():
         allocated_this_month = db.session.query(BudgetAllocation.allocated_amount).filter_by(
             category_id=cat.id, month=month
         ).scalar() or Decimal("0")
-        # Month-bounded envelope balance (changes/025): everything allocated for
-        # this month or earlier, plus every signed transaction posted before the
-        # month ends. Anything dated in a later month is invisible from here.
-        allocated_through = db.session.query(db.func.sum(BudgetAllocation.allocated_amount)).filter(
-            BudgetAllocation.category_id == cat.id,
-            BudgetAllocation.month <= month,
-        ).scalar() or Decimal("0")
         # A transaction the user has put in a category is budget-relevant by
         # that act, even if Plaid tagged it a transfer (changes/028): Venmo,
         # student-loan and similar payments get auto-flagged `transfer` but
         # are real spending. The flag still hides *uncategorized* transfers,
         # which never reach these `category_id == cat.id` queries anyway.
-        spent_through_end = db.session.query(db.func.sum(Transaction.amount)).filter(
-            Transaction.category_id == cat.id,
-            Transaction.posted_at < end,
-        ).scalar() or Decimal("0")
         spent_this_month = db.session.query(db.func.sum(Transaction.amount)).join(Account).filter(
             Transaction.category_id == cat.id,
             Account.user_id == user_id,
             Transaction.posted_at >= start,
             Transaction.posted_at < end,
         ).scalar() or Decimal("0")
-        available = allocated_through + spent_through_end
+        # Month-bounded envelope balance (changes/025), credit-card fold
+        # included. Shared with the move endpoint's guard so the two cannot
+        # drift (changes/030).
+        available = category_available(cat, month)
         own[cat.id] = {
             "allocated_this_month": allocated_this_month,
             "spent_this_month": spent_this_month,
@@ -495,34 +657,10 @@ def get_budget():
     card_totals = {}  # payment_cat_id -> display extras
     if account_by_payment_cat:
         card_ids = set(account_by_payment_cat.values())
-        # Sum the three components per card account in one pass each. Bounded to
-        # transactions posted before the viewed month ends (changes/025) so a
-        # payment envelope's `available` is the cash-to-pay-down as of that
-        # month, consistent with every other category.
-        def _by_card(*clauses):
-            rows = (
-                db.session.query(Transaction.account_id, db.func.sum(Transaction.amount))
-                .filter(
-                    Transaction.account_id.in_(card_ids),
-                    Transaction.posted_at < end,
-                    *clauses,
-                )
-                .group_by(Transaction.account_id)
-                .all()
-            )
-            return {account_id: total or Decimal("0") for account_id, total in rows}
 
-        normal_card_spend = _by_card(
-            Transaction.amount < 0,
-            Transaction.category_id.isnot(None),  # categorized => real spend (changes/028)
-            Transaction.category_id.notin_(payment_cat_ids),
-        )
-        card_payments = _by_card(Transaction.transfer.is_(True), Transaction.amount > 0)
-        card_opening = _by_card(
-            Transaction.description == "Starting Balance",
-            Transaction.plaid_transaction_id.is_(None),
-        )
-
+        # The fold itself is already in `available` — `category_available`
+        # applied it per envelope above (changes/030). What's left here is the
+        # month-scoped display extras, which the fold doesn't cover.
         def _month_by_card(*clauses):
             rows = (
                 db.session.query(Transaction.account_id, db.func.sum(Transaction.amount))
@@ -545,13 +683,6 @@ def get_budget():
         }
 
         for pcat_id, account_id in account_by_payment_cat.items():
-            moved_in = -normal_card_spend.get(account_id, Decimal("0"))  # outflows are negative
-            payments = card_payments.get(account_id, Decimal("0"))
-            opening = card_opening.get(account_id, Decimal("0"))
-            adj = moved_in - payments + opening
-            # Fold BEFORE the group roll-up so the "Credit Card Payments"
-            # group totals its children correctly with no extra code.
-            own[pcat_id]["available"] += adj
             own[pcat_id]["spent_this_month"] = Decimal("0")
             # spent_this_month is forced to 0 for a payment envelope, so its
             # carry-in is just whatever available isn't this month's allocation.
@@ -630,7 +761,7 @@ def get_budget():
     return jsonify(
         {
             "month": month.isoformat(),
-            "ready_to_assign": str(ready_to_assign),
+            "ready_to_assign": str(assignable),
             "categories": active,
             "archived_categories": archived,
             "totals": {key: str(value) for key, value in totals.items()},

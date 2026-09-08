@@ -434,7 +434,7 @@ All 27 confirmed red before commit — every one `404 NOT FOUND`, the route not 
   `changes/029-credit-card-debt-payoff`. Built 2026-09-03 — `budget_api.py`
   needed no logic change (only the new `convert_payment_category_to_plain`
   helper, called from the accounts route); all 6 budget cases green.
-- 030 (2026-09-08) — overspend cover. New `POST /api/allocations/move`
+- 030 (2026-09-08) — overspend cover. **Built.** New `POST /api/allocations/move`
   (contract above): moves money between two envelopes in one month, or
   from `ready_to_assign` into one, applying a delta to both
   `BudgetAllocation` rows in a single DB transaction. The source row is
@@ -448,3 +448,13 @@ All 27 confirmed red before commit — every one `404 NOT FOUND`, the route not 
   `get_budget` into a shared helper, payment-envelope fold included, so
   the move guard and the budget view cannot drift.
   `changes/030-overspend-cover/plan.md`.
+  Built 2026-09-08: `budget_api.py` gains `move_allocation` plus four
+  shared helpers — `category_available` (the extraction D5 called for),
+  `_payment_envelope_adjustment` (the card fold, lifted out of
+  `get_budget`'s batched block), `ready_to_assign`, and
+  `_adjust_allocation` / `_move_side`. `get_budget` now calls
+  `category_available` per category instead of computing the balance
+  inline, so the move guard and the budget view are one implementation
+  rather than two that agree by luck. That rewiring is covered by the
+  existing 021/025/029 card tests, which stayed green throughout. All 27
+  move tests green; full suite 323 passed / 7 skipped, no regressions.
