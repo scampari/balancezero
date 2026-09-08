@@ -156,6 +156,23 @@ Playwright e2e against the real Flask backend and real Vite dev server, same har
 - Covering an envelope back to exactly zero is the expected outcome, not overfunding it. The pre-filled amount reflects that; the user may still type a larger one.
 - Not asserted by e2e: banner styling and dialog layout. The contract covers presence, contents, and the numbers after the move.
 
+### Tests
+
+All in `frontend/e2e/overspend-cover.spec.ts`, seeded by `seed_e2e_overspend.py`.
+
+- § `"the banner appears and names each overspent envelope"` — covers § The banner appears and names each overspent envelope.
+- § `"no banner appears when nothing is overspent"` — covers § The banner is absent when nothing is overspent.
+- § `"covering from another envelope clears the banner"` — covers § Covering from another envelope clears the banner, including the reload that proves it persisted and the unchanged Ready to Assign.
+- § `"covering from Ready to Assign draws on the unassigned pool"` — covers § Covering from Ready to Assign.
+- § `"the dialog pre-fills the amount needed to reach zero"` — covers § The dialog pre-fills the amount needed.
+- § `"covering from a source that does not hold enough is rejected and writes nothing"` — covers § Error case: source does not hold enough.
+
+The tests fix these accessible names, so the implementation must provide them: a `[data-overspend-banner]` alert region, a `Cover <category>` button per listed envelope, a dialog named `/cover/i` containing a `Cover from` select, an `Amount to move` input and a `Move money` submit, plus `[data-available]` on each row's available figure and `[data-ready-to-assign]` on the header figure. The two data attributes are hooks for figures already rendered — not new UI.
+
+`seed_e2e_overspend.py` seeds two users so an absence can be distinguished from a missing feature: `sam-overspend` (Groceries `-40.00`, Dining `+100.00`, Ready to Assign `100.00`) and `sam-overspend-clean` (identical but with Groceries funded, so nothing is overspent). It takes the overspend and source balances as arguments, because the pre-fill case states `37.50` and the insufficient-source case needs Dining below the shortfall. Its own users, never `sam` or `sam-budget`, so it cannot perturb what the other specs assert — the reasoning `seed_e2e_budget.py` already documents. Re-seeded in `beforeEach`, not `beforeAll`, since these tests move money.
+
+All 6 confirmed red before commit — no banner, no Cover button, no `[data-ready-to-assign]`. The "no banner" case ends by logging in as the overspent user and asserting a banner **does** appear: without that positive control it passed pre-implementation for the wrong reason, since an absence proves nothing until presence is possible. Full e2e suite otherwise unaffected: 32 passed.
+
 ## Changes
 - 001 (2026-08-10) — initial contract, third slice of `changes/001-api-spa-rewrite/plan.md`.
 - 001 (2026-08-10) — built. Real React app (api client, auth context, login/budget pages, router). All 4 e2e tests green against the real Flask backend and real browser. Full backend suite (36 tests) unaffected.
