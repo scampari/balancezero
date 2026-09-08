@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { type Page, expect, test } from '@playwright/test'
+import { seedEnv } from './env'
 
 // Covers spec/frontend-app.md § "Overspend notification + Cover dialog"
 // (changes/030). The API behind the Cover button is POST /api/allocations/move
@@ -22,14 +23,7 @@ function seed(overspend?: string, dining?: string) {
   execSync(`venv/bin/python3 seed_e2e_overspend.py ${args}`.trim(), {
     cwd: repoRoot,
     stdio: 'inherit',
-    env: {
-      ...process.env,
-      SECRET_KEY: 'e2e-test-secret',
-      DATABASE_URL: 'postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test',
-      PLAID_ENCRYPTION_KEY: 'tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=',
-      PLAID_CLIENT_ID: 'test-placeholder-client-id',
-      PLAID_SECRET: 'test-placeholder-secret',
-    },
+    env: seedEnv(),
   })
 }
 

@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { seedEnv } from './env'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -19,16 +20,6 @@ export default function globalSetup() {
   execSync('venv/bin/python3 seed_e2e.py', {
     cwd: repoRoot,
     stdio: 'inherit',
-    env: {
-      ...process.env,
-      SECRET_KEY: 'e2e-test-secret',
-      DATABASE_URL: 'postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test',
-      PLAID_ENCRYPTION_KEY: 'tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=',
-      // Placeholders so app.py can boot (it requires these at import, no
-      // default by design) — e2e tests never touch the Plaid endpoints.
-      // Same placeholder values as conftest.py; keep in sync.
-      PLAID_CLIENT_ID: 'test-placeholder-client-id',
-      PLAID_SECRET: 'test-placeholder-secret',
-    },
+    env: seedEnv(),
   })
 }
