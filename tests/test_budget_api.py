@@ -2344,3 +2344,25 @@ def test_move_from_ready_to_assign_beyond_the_pool_returns_400_and_writes_nothin
     assert _allocation_amount(groceries) is None
     budget = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
     assert Decimal(budget["ready_to_assign"]) == Decimal("10.00")
+
+
+def test_move_with_non_integer_category_id_returns_400(client, test_user, auth_headers):
+    # Found while reviewing changes/030, not from the contract: unlike the
+    # allocations route, this endpoint takes its ids from the JSON body, where
+    # Flask's <int:...> converter isn't there to reject a bad one. Handing a
+    # string to db.session.get raised out of the handler as a 500 and left the
+    # transaction aborted.
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    for body in (
+        {"from_category_id": "abc", "to_category_id": groceries, "month": CURRENT_MONTH, "amount": "40.00"},
+        {"from_category_id": dining, "to_category_id": {"x": 1}, "month": CURRENT_MONTH, "amount": "40.00"},
+        {"from_category_id": dining, "to_category_id": [groceries], "month": CURRENT_MONTH, "amount": "40.00"},
+        # True is an int subclass in Python — it must not read as category 1.
+        {"from_category_id": True, "to_category_id": groceries, "month": CURRENT_MONTH, "amount": "40.00"},
+    ):
+        response = client.post("/api/allocations/move", json=body, headers=auth_headers)
+        assert response.status_code == 400, body
+        assert "error" in response.get_json()

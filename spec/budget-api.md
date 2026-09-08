@@ -177,6 +177,7 @@ The user-facing name for this action is **cover**; see `context/budget-glossary.
 - **When either category is archived, Then** `400` — archived envelopes are out of `totals` and out of the budget view; moving money into or out of one would hide it.
 - **When `from_category_id` is non-null and the source's `available` for `month` is less than `amount`, Then** `400`, and **no rows are written** — you cannot move money you do not have, and a partial write would leave the two envelopes out of balance.
 - **When `from_category_id` is `null` and `ready_to_assign` is less than `amount`, Then** `400`, no rows written.
+- **When `to_category_id` or `from_category_id` is present but not an integer, Then** `400` — added during the build, not in the original contract. Unlike every other category route, this endpoint takes its ids from the JSON body, where Flask's `<int:...>` converter isn't there to reject a bad one; passing a string through to `db.session.get` raised out of the handler as a `500` and left the transaction aborted. `true` is rejected too, since `isinstance(True, int)` holds in Python and it would otherwise read as category `1`.
 
 ## Notes
 - Reuses `get_owned_category`'s ownership-check pattern (404 for nonexistent, 403 for wrong-owner) — see `context/security-requirements.md`.

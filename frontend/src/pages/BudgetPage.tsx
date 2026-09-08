@@ -355,6 +355,9 @@ export function BudgetPage() {
   const coverSources = budget.categories.filter(
     (c) => !c.is_group && c.id !== coveringId && Number(c.available) > 0,
   )
+  // With nothing to draw on, the picker would render empty and submitting
+  // would only bounce off the server's guard. Say so instead.
+  const hasCoverSource = readyToAssign > 0 || coverSources.length > 0
   const parentChoices = topLevel.filter((c) => !isPaymentGroup(c))
   const moveTargets = parentChoices // a category can only be re-parented under a top-level one
 
@@ -805,7 +808,14 @@ export function BudgetPage() {
               Overspent by {formatMoney(String(Math.abs(Number(covering.available))))}.
             </p>
 
-            <label className="mt-4 flex flex-col gap-1">
+            {!hasCoverSource && (
+              <p className="mt-4 text-xs text-(--color-text-muted)">
+                Nothing to cover from — every other envelope is empty and there's no money left
+                to assign. Free some up first, or leave this overspent until more income lands.
+              </p>
+            )}
+
+            <label className={`mt-4 flex flex-col gap-1 ${hasCoverSource ? '' : 'hidden'}`}>
               <span className="text-xs font-medium text-(--color-text-muted)">Cover from</span>
               <select
                 aria-label="Cover from"
@@ -824,7 +834,7 @@ export function BudgetPage() {
               </select>
             </label>
 
-            <label className="mt-3 flex flex-col gap-1">
+            <label className={`mt-3 flex flex-col gap-1 ${hasCoverSource ? '' : 'hidden'}`}>
               <span className="text-xs font-medium text-(--color-text-muted)">Amount to move</span>
               <span className="flex items-center gap-1.5">
                 <span aria-hidden className="text-sm text-(--color-text-faint)">$</span>
@@ -854,7 +864,7 @@ export function BudgetPage() {
               </button>
               <button
                 type="submit"
-                disabled={isCovering}
+                disabled={isCovering || !hasCoverSource}
                 className="rounded-md bg-(--color-accent) px-3 py-1.5 text-xs font-medium text-(--color-on-accent) transition-opacity disabled:opacity-60"
               >
                 Move money

@@ -194,6 +194,18 @@ def ready_to_assign(user_id):
     return income_total - total_allocated
 
 
+def _parse_category_id(raw):
+    """A category id arriving in a JSON *body* rather than a path segment.
+    Routes with `<int:category_id>` get this check from Flask's converter for
+    free; a body value is unvalidated, and handing a non-integer straight to
+    `db.session.get` raises out of the handler as a 500 and aborts the
+    transaction. Bools are rejected explicitly — `isinstance(True, int)` is
+    True in Python, so `true` would otherwise read as category 1."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw
+
+
 def _adjust_allocation(category, month, delta):
     """Add `delta` to the category's allocation for `month`, creating the row
     if there isn't one. Unlike set_allocation this may leave the row negative
@@ -520,6 +532,14 @@ def move_allocation():
 
     if to_category_id is None or "month" not in data or "amount" not in data:
         return jsonify({"error": "to_category_id, month and amount are required"}), 400
+
+    to_category_id = _parse_category_id(to_category_id)
+    if to_category_id is None:
+        return jsonify({"error": "to_category_id must be an integer"}), 400
+    if from_category_id is not None:
+        from_category_id = _parse_category_id(from_category_id)
+        if from_category_id is None:
+            return jsonify({"error": "from_category_id must be an integer or null"}), 400
 
     month = _parse_month(data["month"])
     if month is None:
