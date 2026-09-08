@@ -93,7 +93,77 @@ the `AppShell` header:
   `html[data-theme="light"]` and survives a reload, and that `System`
   tracks `emulateMedia({ colorScheme })`.
 
+## Overspend notification + Cover dialog (changes/030)
+
+The budget page tells the user when an envelope has gone negative and lets them fix it in place, without leaving the page or hand-editing two allocation inputs.
+The user-facing verb is **cover** (see `context/budget-glossary.md`); the API call behind it is `POST /api/allocations/move` in `spec/budget-api.md`.
+
+**Which categories count as overspent:** an entry in `GET /api/budget`'s `categories` with `available < 0`, `is_group` false.
+Groups are excluded because they are not allocatable — a group alert would carry a button with nothing to do.
+Archived categories are excluded because they are already out of `categories`.
+No new API field: the page derives this from the budget it already fetches.
+
+### Integration test contract
+
+Playwright e2e against the real Flask backend and real Vite dev server, same harness as the tests above.
+
+#### The banner appears and names each overspent envelope
+
+**Setup:** Seeded logged-in user viewing the current month with two leaf categories — "Groceries" overspent (`available` negative) and "Dining" holding a positive balance at least as large.
+**Action:** Load `/budget`.
+**Input:** None.
+**Expected output:** A banner is visible above the category table, named as an alert region, stating how many envelopes are overspent and listing "Groceries" with its negative amount. Each listed envelope has a **Cover** button.
+**Side effects:** None.
+
+#### The banner is absent when nothing is overspent
+
+**Setup:** Same user, every category at zero or positive `available`.
+**Action:** Load `/budget`.
+**Expected output:** No banner. No Cover button anywhere on the page.
+**Side effects:** None.
+
+#### Covering from another envelope clears the banner
+
+**Setup:** The overspent state from the first case — Groceries at `-40.00`, Dining at `+100.00`.
+**Action:** Click **Cover** on the Groceries row of the banner, pick "Dining" as the source, accept the pre-filled amount, submit.
+**Input:** Source "Dining", amount `40.00`.
+**Expected output:** The dialog closes. The banner disappears. Groceries' `available` reads `$0.00` and is no longer red; Dining's reads `$60.00`. Ready to Assign is unchanged from before the move.
+**Side effects:** Two `BudgetAllocation` rows written for the viewed month — Groceries `+40.00`, Dining `−40.00` against their prior values. Surviving a page reload proves it was persisted, not just local state.
+
+#### Covering from Ready to Assign
+
+**Setup:** Groceries overspent by `40.00`; Ready to Assign is `100.00`.
+**Action:** Click **Cover**, leave the source on its default "Ready to Assign", submit `40.00`.
+**Expected output:** Banner clears, Groceries reads `$0.00`, Ready to Assign now reads `$60.00`.
+**Side effects:** One `BudgetAllocation` row written (Groceries `+40.00`). No other category changes.
+
+#### The dialog pre-fills the amount needed
+
+**Setup:** Groceries overspent by `37.50`.
+**Action:** Click **Cover** on the Groceries row.
+**Expected output:** The amount field already contains `37.50` — the exact figure that brings the envelope to zero. The destination is fixed to Groceries and is not editable from this entry point.
+**Side effects:** None.
+
+#### Error case: source does not hold enough
+
+**Setup:** Groceries overspent by `40.00`; Dining holds only `10.00`.
+**Action:** Click **Cover**, pick "Dining", submit `40.00`.
+**Expected output:** The dialog stays open and shows an inline error saying the source does not have that much. The banner is still there and no amounts on the page have changed. Reloading confirms nothing was written.
+**Side effects:** None — the backend rejects with `400` and writes no rows, so a move can never leave the two envelopes out of balance.
+
+### Notes
+- The source picker offers only leaf, non-archived categories with `available > 0`, plus "Ready to Assign" when that figure is positive. Offering a source that cannot fund the move would only produce the error above.
+- Covering an envelope back to exactly zero is the expected outcome, not overfunding it. The pre-filled amount reflects that; the user may still type a larger one.
+- Not asserted by e2e: banner styling and dialog layout. The contract covers presence, contents, and the numbers after the move.
+
 ## Changes
 - 001 (2026-08-10) — initial contract, third slice of `changes/001-api-spa-rewrite/plan.md`.
 - 001 (2026-08-10) — built. Real React app (api client, auth context, login/budget pages, router). All 4 e2e tests green against the real Flask backend and real browser. Full backend suite (36 tests) unaffected.
 - 002 (2026-08-10) — added silent-refresh-on-mount: AuthProvider now attempts one `/api/refresh` call on load, gated behind a new `isAuthChecked` flag pages wait for before redirecting to login. Found and fixed a real React StrictMode-exposed bug during this: without a ref guard, StrictMode's dev-only double-invoke fired two concurrent refresh calls racing against the same one-time-use rotating cookie — one 200s, one 401s, and the wrong one could win. All 7 e2e tests green (3 reruns for stability), full 50-test backend suite unaffected.
+- 030 (2026-09-08) — overspend notification + Cover dialog (contract
+  above). `BudgetPage.tsx` gains a banner listing overspent leaf
+  categories and a Cover dialog that calls the new `POST
+  /api/allocations/move`; `client.ts` gains `moveAllocation` +
+  `moveAllocationWithAutoRefresh`. No new API field — overspent is
+  derived from the budget the page already fetches.
+  `changes/030-overspend-cover/plan.md`.

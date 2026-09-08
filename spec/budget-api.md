@@ -145,6 +145,39 @@ No delete endpoint exists — categories are archived, never removed, so their h
 - **When `amount` is negative, Then** `400` — allocations must be zero or positive (decided 2026-08-10: a negative allocation isn't a meaningful action in zero-based budgeting; overspending shows up as a negative *available* balance, not a negative allocation).
 - **When `month` isn't a valid ISO date, Then** `400`.
 
+### POST /api/allocations/move (changes/030)
+
+Moves money between two envelopes in one month, or from `ready_to_assign` into one envelope.
+The user-facing name for this action is **cover**; see `context/budget-glossary.md` for why it is neither a "transfer" nor a "moved in".
+
+**Setup:** An authenticated user owns both categories named in the request. The source envelope holds at least `amount`.
+**Action:** `POST /api/allocations/move`, `Authorization: Bearer <access token>`.
+**Input:** JSON `{"from_category_id": <int> | null, "to_category_id": <int>, "month": "YYYY-MM-01", "amount": "12.34"}`. A `null` `from_category_id` means the money comes from `ready_to_assign` rather than from another envelope.
+**Expected output:** `200`, JSON `{"month": "...", "amount": "...", "from": null | {"category_id": ..., "allocated_amount": "...", "available": "..."}, "to": {"category_id": ..., "allocated_amount": "...", "available": "..."}}` — each side's state *after* the move, so the caller can update two rows without refetching the whole budget.
+**Side effects:** In a single DB transaction, `amount` is **subtracted** from the source category's `BudgetAllocation` for `month` and **added** to the destination's, each row upserted if absent. With a `null` source, only the destination row is written.
+
+**Invariants** (these are the point of the endpoint, not incidental):
+- **A move never creates a new overspent category.** Guaranteed by the `amount <= source available` guard below.
+- **A move leaves `ready_to_assign` unchanged** when `from_category_id` is non-null — it writes `−amount` and `+amount`, and `ready_to_assign` is a global sum over all allocations. With a `null` source it decreases `ready_to_assign` by exactly `amount`, identical to a plain allocation.
+- **A move leaves `totals.allocated_this_month` and `totals.available` unchanged** when both sides are within the same month, for the same reason. The user moved money; they did not gain or lose any.
+- **The source `BudgetAllocation.allocated_amount` may go negative.** This is the deliberate carve-out from the `POST /api/categories/<id>/allocations` zero-or-positive rule — see that contract's error case and the Notes below. It is the only way to move an envelope's carried-in rollover, which is the balance a user most often reaches for when covering an overspend.
+- **`available` for the guard is the same figure `GET /api/budget` reports**, payment-envelope fold included (`moved_in` / `cc_payments` / `cc_opening`). Both read one shared helper; the guard must never re-derive it from the raw allocation-plus-spend sum, or a payment envelope can be overdrawn.
+
+#### Error cases
+- **When no/invalid access token, Then** `401`.
+- **When `to_category_id` doesn't exist at all, Then** `404`.
+- **When `from_category_id` is non-null and doesn't exist at all, Then** `404`.
+- **When either category exists but is owned by a different user, Then** `403` (never `404`, matching `get_owned_category`).
+- **When `to_category_id` is missing, or `month` or `amount` is missing, Then** `400`.
+- **When `amount` isn't a valid decimal, Then** `400`.
+- **When `amount` is zero or negative, Then** `400` — a move has a direction; reverse the two ids instead.
+- **When `month` isn't a valid ISO date, Then** `400`.
+- **When `from_category_id` equals `to_category_id`, Then** `400` — a no-op that would otherwise write two rows.
+- **When either category is a group (has a non-archived child), Then** `400` — groups are not allocatable, so they can be neither source nor destination. Consistent with `POST /api/categories/<id>/allocations`.
+- **When either category is archived, Then** `400` — archived envelopes are out of `totals` and out of the budget view; moving money into or out of one would hide it.
+- **When `from_category_id` is non-null and the source's `available` for `month` is less than `amount`, Then** `400`, and **no rows are written** — you cannot move money you do not have, and a partial write would leave the two envelopes out of balance.
+- **When `from_category_id` is `null` and `ready_to_assign` is less than `amount`, Then** `400`, no rows written.
+
 ## Notes
 - Reuses `get_owned_category`'s ownership-check pattern (404 for nonexistent, 403 for wrong-owner) — see `context/security-requirements.md`.
 - The pre-existing `/categories//allocations` route bug (missing `<int:category_id>` placeholder) is fixed by this slice's correctly-declared `/api/categories/<int:category_id>/allocations` route — not a separate fix, just don't repeat the mistake.
@@ -272,6 +305,12 @@ No delete endpoint exists — categories are archived, never removed, so their h
 
 - `tests/test_budget_api.py` § changes/025 additions — `test_get_budget_available_excludes_later_month_activity` (later-month allocations/transactions invisible from the viewed month), `test_get_budget_rollover_carries_prior_month_leftover` / `test_get_budget_overspend_rolls_negative_into_next_month` (the `rollover` field, positive and negative), `test_get_budget_ready_to_assign_is_scoped_to_income_through_viewed_month` + `test_get_budget_future_allocation_does_not_reduce_current_month_ready_to_assign` (month-scoped `ready_to_assign`), `test_get_budget_totals_include_rollover`, `test_get_budget_group_rollover_sums_its_children`, `test_card_activity_after_the_viewed_month_is_excluded_from_payment_available`.
 
+- `tests/test_budget_api.py` § `POST /api/allocations/move` section (`test_move_*`, changes/030) — 27 tests covering the contract above.
+  Contract + invariants: `test_move_between_envelopes_shifts_both_allocations_returns_200` (response shape and both allocation rows), `test_move_response_matches_what_get_budget_reports` (the response's `available` agrees with the budget view, so skipping the refetch is safe), `test_move_allows_the_source_allocation_to_go_negative` (the carve-out — the source's balance is carried-in rollover, so `allocated_this_month` is `0` and only a negative row can express the move), `test_move_leaves_ready_to_assign_unchanged`, `test_move_leaves_totals_unchanged`, `test_move_from_ready_to_assign_writes_only_the_destination` (`from_category_id: null`), `test_move_of_exactly_the_available_balance_leaves_the_source_at_zero` (the guard's boundary), `test_move_out_of_a_payment_envelope_reads_the_folded_available` (the shared-helper requirement — allocations are `0` while `available` is `40`, so a guard re-deriving from the raw allocation sum would wrongly reject).
+  Error cases: `401` no token; `404` nonexistent destination / source; `403` another user's destination / source; `400` for missing `to_category_id` / `month` / `amount`, invalid decimal, zero amount, negative amount, invalid month, self-move, group as destination / source, archived as destination / source; and the two guard rejections (`test_move_more_than_the_source_holds_returns_400_and_writes_nothing`, `test_move_from_ready_to_assign_beyond_the_pool_returns_400_and_writes_nothing`), which assert **no rows were written** on either side, since a partial write would leave the two envelopes out of balance.
+
+All 27 confirmed red before commit — every one `404 NOT FOUND`, the route not existing. The two nonexistent-category tests additionally assert `"error" in response.get_json()`, which is what stops them passing pre-implementation on Flask's own routing 404 — the trap documented against `test_set_allocation_on_nonexistent_category_returns_404` above, avoided this time rather than noted after the fact. Full backend suite otherwise unaffected: 296 passed, 7 skipped (Plaid sandbox).
+
 ## Changes
 - 001 (2026-08-10) — initial contract, second slice of `changes/001-api-spa-rewrite/plan.md`.
 - 001 (2026-08-10) — built. New `budget_api.py` blueprint; old server-rendered routes, templates, and flask_wtf removed. All 19 tests green (36 total with auth.md's suite, no regressions).
@@ -395,3 +434,17 @@ No delete endpoint exists — categories are archived, never removed, so their h
   `changes/029-credit-card-debt-payoff`. Built 2026-09-03 — `budget_api.py`
   needed no logic change (only the new `convert_payment_category_to_plain`
   helper, called from the accounts route); all 6 budget cases green.
+- 030 (2026-09-08) — overspend cover. New `POST /api/allocations/move`
+  (contract above): moves money between two envelopes in one month, or
+  from `ready_to_assign` into one, applying a delta to both
+  `BudgetAllocation` rows in a single DB transaction. The source row is
+  permitted to go negative — the deliberate carve-out from the
+  zero-or-positive rule on `POST /api/categories/<id>/allocations`, which
+  is unchanged. Guarded by `amount <= source available`, so a move can
+  never create a new overspent category. `GET /api/budget` is **not
+  changed**: "overspent" is already derivable as `available < 0` on a
+  non-group, non-archived entry, so the notification needs no new field.
+  Requires extracting the per-category `available` computation out of
+  `get_budget` into a shared helper, payment-envelope fold included, so
+  the move guard and the budget view cannot drift.
+  `changes/030-overspend-cover/plan.md`.
