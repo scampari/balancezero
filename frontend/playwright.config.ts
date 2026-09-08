@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { defineConfig, devices } from '@playwright/test'
+import { E2E_ENV } from './e2e/env'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -30,11 +31,7 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 30_000,
       env: {
-        SECRET_KEY: 'e2e-test-secret',
-        DATABASE_URL: 'postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test',
-        PLAID_ENCRYPTION_KEY: 'tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=',
-        PLAID_CLIENT_ID: 'test-placeholder-client-id',
-        PLAID_SECRET: 'test-placeholder-secret',
+        ...E2E_ENV,
         FLASK_DEBUG: '0',
         // The whole serial suite hammers /login from 127.0.0.1; the
         // production-default per-IP limits would trip mid-run. The 429

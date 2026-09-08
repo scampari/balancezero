@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test, expect } from '@playwright/test'
+import { seedEnv } from './env'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -14,14 +15,7 @@ test.beforeAll(() => {
   execSync('venv/bin/python3 seed_e2e_signup.py', {
     cwd: repoRoot,
     stdio: 'inherit',
-    env: {
-      ...process.env,
-      SECRET_KEY: 'e2e-test-secret',
-      DATABASE_URL: 'postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test',
-      PLAID_ENCRYPTION_KEY: 'tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=',
-      PLAID_CLIENT_ID: 'test-placeholder-client-id',
-      PLAID_SECRET: 'test-placeholder-secret',
-    },
+    env: seedEnv(),
   })
 })
 

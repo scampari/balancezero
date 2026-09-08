@@ -1876,3 +1876,493 @@ def test_ready_to_assign_unchanged_by_debt_payoff_conversion(
     after = Decimal(client.get("/api/budget", headers=auth_headers).get_json()["ready_to_assign"])
     assert before == Decimal("800.00")  # 1000 income - 200 allocated
     assert after == before
+
+
+# ---------------------------------------------------------------------------
+# POST /api/allocations/move — cover an overspent envelope (changes/030)
+# ---------------------------------------------------------------------------
+
+
+def _move(client, auth_headers, to_category_id, amount, from_category_id=None, month=CURRENT_MONTH,
+          headers_override=None, body_override=None):
+    """Arrange/Act helper for the move endpoint. `from_category_id=None` means
+    the money comes from ready_to_assign, per the contract. `body_override`
+    replaces the whole payload for the missing/invalid-field error cases."""
+    body = {
+        "from_category_id": from_category_id,
+        "to_category_id": to_category_id,
+        "month": month,
+        "amount": amount,
+    }
+    if body_override is not None:
+        body = body_override
+    return client.post(
+        "/api/allocations/move",
+        json=body,
+        headers=auth_headers if headers_override is None else headers_override,
+    )
+
+
+def _allocation_amount(category_id, month=CURRENT_MONTH):
+    row = BudgetAllocation.query.filter_by(
+        category_id=category_id, month=date.fromisoformat(month)
+    ).first()
+    return None if row is None else row.allocated_amount
+
+
+def test_move_between_envelopes_shifts_both_allocations_returns_200(client, test_user, auth_headers):
+    # Arrange — Dining holds 100, Groceries is overspent by 40.
+    from decimal import Decimal
+
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "-40.00", category_id=groceries)
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="40.00")
+
+    # Assert — response reports each side's state after the move
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["month"] == CURRENT_MONTH
+    assert Decimal(body["amount"]) == Decimal("40.00")
+    assert body["from"]["category_id"] == dining
+    assert Decimal(body["from"]["allocated_amount"]) == Decimal("60.00")
+    assert Decimal(body["from"]["available"]) == Decimal("60.00")
+    assert body["to"]["category_id"] == groceries
+    assert Decimal(body["to"]["allocated_amount"]) == Decimal("40.00")
+    assert Decimal(body["to"]["available"]) == Decimal("0")
+
+    # Assert side effects — both allocation rows written
+    assert _allocation_amount(dining) == Decimal("60.00")
+    assert _allocation_amount(groceries) == Decimal("40.00")
+
+
+def test_move_response_matches_what_get_budget_reports(client, test_user, auth_headers):
+    # The response exists so the caller can update two rows without refetching;
+    # it must agree with the budget view or that shortcut is a lie.
+    from decimal import Decimal
+
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "-40.00", category_id=groceries)
+
+    # Act
+    body = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="40.00").get_json()
+
+    # Assert
+    for side, cid in (("from", dining), ("to", groceries)):
+        entry = _budget_entry(client, auth_headers, cid)
+        assert Decimal(body[side]["available"]) == Decimal(entry["available"])
+        assert Decimal(body[side]["allocated_amount"]) == Decimal(entry["allocated_this_month"])
+
+
+def test_move_allows_the_source_allocation_to_go_negative(client, test_user, auth_headers):
+    # The carve-out from the zero-or-positive allocation rule: Dining's whole
+    # balance is carried-in rollover, so allocated_this_month is 0 and the only
+    # way to move it is a negative row. This is the case the plain allocations
+    # endpoint cannot express.
+    from decimal import Decimal
+
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00", month=_prev_month_date().isoformat())
+
+    # Act — move this month, where Dining has no allocation of its own
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="100.00")
+
+    # Assert
+    assert response.status_code == 200
+    assert _allocation_amount(dining) == Decimal("-100.00")
+    assert _allocation_amount(groceries) == Decimal("100.00")
+    # …and the money really did land: Dining is emptied, Groceries holds it.
+    assert Decimal(_budget_entry(client, auth_headers, dining)["available"]) == Decimal("0")
+    assert Decimal(_budget_entry(client, auth_headers, groceries)["available"]) == Decimal("100.00")
+
+
+def test_move_leaves_ready_to_assign_unchanged(client, test_user, auth_headers):
+    # A move is zero-sum across allocations, and ready_to_assign is a global
+    # sum over allocations — so it cannot move.
+    from decimal import Decimal
+
+    _make_account_with_income(test_user.id, "1000.00")
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+    before = Decimal(client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()["ready_to_assign"])
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="40.00")
+
+    # Assert — the move must actually have happened, or "unchanged" is vacuous
+    assert response.status_code == 200
+    after = Decimal(client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()["ready_to_assign"])
+    assert before == Decimal("900.00")  # 1000 income - 100 allocated
+    assert after == before
+
+
+def test_move_leaves_totals_unchanged(client, test_user, auth_headers):
+    # The user moved money; they did not gain or lose any.
+    from decimal import Decimal
+
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+    account = _account(test_user.id)
+    _txn(account.id, date.today().replace(day=1), "-40.00", category_id=groceries)
+    before = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()["totals"]
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="40.00")
+
+    # Assert — the move must actually have happened, or "unchanged" is vacuous
+    assert response.status_code == 200
+    after = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()["totals"]
+    assert Decimal(after["budgeted"]) == Decimal(before["budgeted"])
+    assert Decimal(after["available"]) == Decimal(before["available"])
+
+
+def test_move_from_ready_to_assign_writes_only_the_destination(client, test_user, auth_headers):
+    # from_category_id: null — the money comes from the unassigned pool.
+    from decimal import Decimal
+
+    _make_account_with_income(test_user.id, "100.00")
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    account = _account(test_user.id, name="Spending")
+    _txn(account.id, date.today().replace(day=1), "-40.00", category_id=groceries)
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=None, amount="40.00")
+
+    # Assert
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["from"] is None
+    assert Decimal(body["to"]["allocated_amount"]) == Decimal("40.00")
+
+    # Assert side effects — one row written, and only the pool moved
+    assert _allocation_amount(groceries) == Decimal("40.00")
+    assert _allocation_amount(dining) is None
+    budget = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    assert Decimal(budget["ready_to_assign"]) == Decimal("60.00")  # 100 income - 40 now allocated
+
+
+def test_move_of_exactly_the_available_balance_leaves_the_source_at_zero(client, test_user, auth_headers):
+    # The guard's boundary: draining a source to exactly zero is allowed, so a
+    # move can empty an envelope but never overspend it.
+    from decimal import Decimal
+
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "40.00")
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="40.00")
+
+    # Assert
+    assert response.status_code == 200
+    assert Decimal(_budget_entry(client, auth_headers, dining)["available"]) == Decimal("0")
+
+
+def test_move_out_of_a_payment_envelope_reads_the_folded_available(
+    client, test_user, auth_headers, credit_account
+):
+    # A payment envelope's available folds in card spending (moved_in) on top of
+    # its allocations — here allocations are 0 but available is 40. The guard
+    # must read the same folded figure GET /api/budget reports; a guard that
+    # re-derived available from the raw allocation sum would see 0 and reject
+    # this move.
+    from decimal import Decimal
+
+    card, payment_cat, _group = credit_account
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    _allocate(client, auth_headers, groceries, "100.00")
+    _card_txn(card.id, "-40.00", category_id=groceries, description="WHOLE FOODS", plaid_transaction_id="g1")
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    assert Decimal(_budget_entry(client, auth_headers, payment_cat.id)["available"]) == Decimal("40.00")
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=dining, from_category_id=payment_cat.id, amount="40.00")
+
+    # Assert
+    assert response.status_code == 200
+    assert Decimal(_budget_entry(client, auth_headers, payment_cat.id)["available"]) == Decimal("0")
+    assert Decimal(_budget_entry(client, auth_headers, dining)["available"]) == Decimal("40.00")
+
+
+# --- Error cases -----------------------------------------------------------
+
+
+def test_move_without_token_returns_401(client, test_user, auth_headers):
+    # Arrange
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining,
+                     amount="40.00", headers_override={})
+
+    # Assert
+    assert response.status_code == 401
+
+
+def test_move_to_nonexistent_category_returns_404(client, test_user, auth_headers):
+    # Arrange
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert — a JSON error from the handler, not Flask's HTML 404 for a
+    # route that doesn't exist (which would let this pass before the endpoint
+    # is even written).
+    response = _move(client, auth_headers, to_category_id=999999, from_category_id=dining, amount="40.00")
+    assert response.status_code == 404
+    assert "error" in response.get_json()
+
+
+def test_move_from_nonexistent_category_returns_404(client, test_user, auth_headers):
+    # Arrange
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act / Assert — see the note on the sibling test above.
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=999999, amount="40.00")
+    assert response.status_code == 404
+    assert "error" in response.get_json()
+
+
+def test_move_to_another_users_category_returns_403(client, test_user, auth_headers):
+    # Arrange
+    other = User(username="other-move-to", password_hash=generate_password_hash("irrelevant"))
+    db.session.add(other)
+    db.session.commit()
+    theirs = Category(user_id=other.id, name="Theirs")
+    db.session.add(theirs)
+    db.session.commit()
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=theirs.id, from_category_id=dining, amount="40.00")
+    assert response.status_code == 403
+
+
+def test_move_from_another_users_category_returns_403(client, test_user, auth_headers):
+    # Arrange
+    other = User(username="other-move-from", password_hash=generate_password_hash("irrelevant"))
+    db.session.add(other)
+    db.session.commit()
+    theirs = Category(user_id=other.id, name="Theirs")
+    db.session.add(theirs)
+    db.session.commit()
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=theirs.id, amount="40.00")
+    assert response.status_code == 403
+
+
+def test_move_missing_to_category_id_returns_400(client, test_user, auth_headers):
+    # Arrange
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=None, amount=None, body_override={
+        "from_category_id": dining, "month": CURRENT_MONTH, "amount": "40.00"
+    })
+    assert response.status_code == 400
+
+
+def test_move_missing_month_returns_400(client, test_user, auth_headers):
+    # Arrange
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=None, amount=None, body_override={
+        "from_category_id": dining, "to_category_id": groceries, "amount": "40.00"
+    })
+    assert response.status_code == 400
+
+
+def test_move_missing_amount_returns_400(client, test_user, auth_headers):
+    # Arrange
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=None, amount=None, body_override={
+        "from_category_id": dining, "to_category_id": groceries, "month": CURRENT_MONTH
+    })
+    assert response.status_code == 400
+
+
+def test_move_invalid_amount_format_returns_400(client, test_user, auth_headers):
+    # Arrange
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="not-a-number")
+    assert response.status_code == 400
+
+
+def test_move_zero_amount_returns_400(client, test_user, auth_headers):
+    # A move has a direction; zero is a no-op that would still write two rows.
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="0")
+    assert response.status_code == 400
+
+
+def test_move_negative_amount_returns_400(client, test_user, auth_headers):
+    # Reverse the two ids instead of sending a negative amount.
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="-40.00")
+    assert response.status_code == 400
+
+
+def test_move_invalid_month_format_returns_400(client, test_user, auth_headers):
+    # Arrange
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining,
+                     amount="40.00", month="not-a-date")
+    assert response.status_code == 400
+
+
+def test_move_from_a_category_to_itself_returns_400(client, test_user, auth_headers):
+    # Arrange
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=dining, from_category_id=dining, amount="40.00")
+    assert response.status_code == 400
+
+
+def test_move_into_a_group_returns_400(client, test_user, auth_headers):
+    # Groups are not allocatable, so they cannot be a destination — same rule as
+    # POST /api/categories/<id>/allocations.
+    parent = _new_category(client, auth_headers, "Food")["id"]
+    _new_category(client, auth_headers, "Groceries", parent_id=parent)
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=parent, from_category_id=dining, amount="40.00")
+    assert response.status_code == 400
+
+
+def test_move_out_of_a_group_returns_400(client, test_user, auth_headers):
+    # Arrange
+    parent = _new_category(client, auth_headers, "Food")["id"]
+    child = _new_category(client, auth_headers, "Groceries", parent_id=parent)["id"]
+    _allocate(client, auth_headers, child, "100.00")
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=dining, from_category_id=parent, amount="40.00")
+    assert response.status_code == 400
+
+
+def test_move_into_an_archived_category_returns_400(client, test_user, auth_headers):
+    # Archived envelopes are out of the budget view; money moved in would hide.
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+    _patch_category(client, auth_headers, groceries, archived=True)
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="40.00")
+    assert response.status_code == 400
+
+
+def test_move_out_of_an_archived_category_returns_400(client, test_user, auth_headers):
+    # Arrange
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+    _patch_category(client, auth_headers, dining, archived=True)
+
+    # Act / Assert
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="40.00")
+    assert response.status_code == 400
+
+
+def test_move_more_than_the_source_holds_returns_400_and_writes_nothing(client, test_user, auth_headers):
+    # The load-bearing guard: a move can never create a new overspent category.
+    # A partial write would leave the two envelopes out of balance, so neither
+    # row may be touched.
+    from decimal import Decimal
+
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "10.00")
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=dining, amount="40.00")
+
+    # Assert
+    assert response.status_code == 400
+
+    # Assert side effects — nothing written on either side
+    assert _allocation_amount(dining) == Decimal("10.00")
+    assert _allocation_amount(groceries) is None
+
+
+def test_move_from_ready_to_assign_beyond_the_pool_returns_400_and_writes_nothing(client, test_user, auth_headers):
+    # Arrange — only 10 unassigned, asking for 40.
+    from decimal import Decimal
+
+    _make_account_with_income(test_user.id, "10.00")
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+
+    # Act
+    response = _move(client, auth_headers, to_category_id=groceries, from_category_id=None, amount="40.00")
+
+    # Assert
+    assert response.status_code == 400
+    assert _allocation_amount(groceries) is None
+    budget = client.get(f"/api/budget?month={CURRENT_MONTH}", headers=auth_headers).get_json()
+    assert Decimal(budget["ready_to_assign"]) == Decimal("10.00")
+
+
+def test_move_with_non_integer_category_id_returns_400(client, test_user, auth_headers):
+    # Found while reviewing changes/030, not from the contract: unlike the
+    # allocations route, this endpoint takes its ids from the JSON body, where
+    # Flask's <int:...> converter isn't there to reject a bad one. Handing a
+    # string to db.session.get raised out of the handler as a 500 and left the
+    # transaction aborted.
+    groceries = _new_category(client, auth_headers, "Groceries")["id"]
+    dining = _new_category(client, auth_headers, "Dining")["id"]
+    _allocate(client, auth_headers, dining, "100.00")
+
+    for body in (
+        {"from_category_id": "abc", "to_category_id": groceries, "month": CURRENT_MONTH, "amount": "40.00"},
+        {"from_category_id": dining, "to_category_id": {"x": 1}, "month": CURRENT_MONTH, "amount": "40.00"},
+        {"from_category_id": dining, "to_category_id": [groceries], "month": CURRENT_MONTH, "amount": "40.00"},
+        # True is an int subclass in Python — it must not read as category 1.
+        {"from_category_id": True, "to_category_id": groceries, "month": CURRENT_MONTH, "amount": "40.00"},
+    ):
+        response = client.post("/api/allocations/move", json=body, headers=auth_headers)
+        assert response.status_code == 400, body
+        assert "error" in response.get_json()

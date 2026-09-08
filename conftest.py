@@ -5,7 +5,13 @@ os.environ.setdefault(
     "DATABASE_URL",
     "postgresql://balancezero_test:balancezero_test@localhost:55432/balancezero_test",
 )
-# Fixed test-only Fernet key — never used for anything but the test database.
+# Fixed test-only Fernet key — never used for anything but the test database,
+# which every run drops and recreates. Not a credential for anything real; the
+# real key lives in .env, which is gitignored. Secret scanners flag it on
+# sight. The Playwright half of the harness needs the identical value (a
+# differing key can't decrypt its own fixtures) and keeps it in
+# frontend/e2e/env.ts, which can't be imported from Python — these two copies
+# are the only ones, and they must stay in sync.
 os.environ.setdefault("PLAID_ENCRYPTION_KEY", "tD039HeVFX17-RRQiCcp3Cv4NjIjKRPkdKQhAgdW6jQ=")
 # app.py requires these to exist just to import (no default there, by
 # design — see plaid_api.py). Placeholder values let the app + most tests
